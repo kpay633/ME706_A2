@@ -26,8 +26,8 @@
 #include <Servo.h>
 #include "Motor.h"
 #include "Sensors.h"
-#include "Homing.h"
-#include "Tilling.h"
+#include "sweep.h"
+
 
 //#define NO_READ_GYRO  //Uncomment if GYRO is not attached.
 //#define NO_HC_SR04  //Uncomment if HC-SR04 ultrasonic ranging sensor is not attached.
@@ -95,23 +95,24 @@ void loop(void)  //main loop
     case IDLE:
       machine_step = idle();
       break;
-    case HOMING:
-      machine_step = homing();
-    //   if (millis() - previous_millis > 200) {  //Arduino style 500ms timed execution statement
-    // previous_millis = millis();
-    // SerialCom->print(sensors.readUltrasonicCm());
-    // SerialCom->print(", ");
-    // SerialCom->print(millis());
-    // SerialCom->println(",");
-    //   }
+
+
+          case INIT_SWEEP:
+      machine_step = init_sweep();
       break;
-    case TILLING:
-      machine_step = tilling();
-    //   if (millis() - previous_millis > 200) {  //Arduino style 500ms timed execution statement
-    // previous_millis = millis();
-    // SerialCom->print(sensors.readUltrasonicCm());
-    // SerialCom->print(", ");
-    //   }
+    case TURN_TO_FIRE:
+      machine_step = turn_to_fire();
+      break;
+    case APPROACH_FIRE:
+      machine_step = turn_to_fire();
+      break;
+
+    case FIRE:
+      machine_step = fire();
+      break;
+
+          case ALIGN_TO_FIRE:
+      machine_step = turn_to_fire();
       break;
     case STOPPED:
       machine_step = stopped();
