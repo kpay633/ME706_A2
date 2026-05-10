@@ -96,24 +96,10 @@ void loop(void)  //main loop
       machine_step = idle();
       break;
 
-
-          case INIT_SWEEP:
-      machine_step = init_sweep();
-      break;
-    case TURN_TO_FIRE:
-      machine_step = turn_to_fire();
-      break;
-    case APPROACH_FIRE:
-      machine_step = turn_to_fire();
-      break;
-
     case FIRE:
       machine_step = fire();
       break;
 
-          case ALIGN_TO_FIRE:
-      machine_step = turn_to_fire();
-      break;
     case STOPPED:
       machine_step = stopped();
       break;
