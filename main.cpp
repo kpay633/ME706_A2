@@ -23,10 +23,11 @@
 -----------------------------
 */
 
+#include "main.h"
 #include <Servo.h>
 #include "Motor.h"
 #include "Sensors.h"
-#include "sweep.h"
+#include "fire.h"
 
 
 //#define NO_READ_GYRO  //Uncomment if GYRO is not attached.
@@ -75,20 +76,7 @@ void setup(void) {
 }
 void loop(void)  //main loop
 {
-    //Finite-state machine Code
   switch (machine_step) {
-    case DEBUG:
-      // Serial.println("LR1");
-      // Serial.println(sensors.readLongRangeIR1());
-      // Serial.println("LR2");
-      // Serial.println(sensors.readLongRangeIR2());
-      // Serial.println("SR1");
-      // Serial.println(sensors.readShortRangeIR1());
-      // Serial.println("SR2");
-      // Serial.println(sensors.readShortRangeIR2());
-      // delay(500);
-      machine_step = DEBUG;
-    break;
     case INITIALISING:
       machine_step = initialising();
     break;
@@ -107,19 +95,6 @@ void loop(void)  //main loop
       machine_step = error();
       break;
   };
-  if((machine_step == STEP::TILLING)){
-    if (millis() - main_previous_millis > 200) {  //Arduino style 500ms timed execution statement
-      main_previous_millis = millis();
-      SerialCom->print(sensors.readUltrasonicCm());
-      SerialCom->print(", ");
-      SerialCom->print(millis());
-      SerialCom->print(", ");
-      SerialCom->print(sensors.readLongRangeIR1());
-      SerialCom->print(", ");
-      SerialCom->print(sensors.readLongRangeIR2());
-      SerialCom->println(", ");
-    }
-  }
 }
 
 STEP initialising() {
@@ -158,9 +133,9 @@ STEP idle() {
   char key;
   key = read_serial_command();
   if(key == 'h'){
-    return STEP::HOMING;
+    return STEP::IDLE;
   } else if (key == 't'){
-    return STEP::TILLING;
+    return STEP::IDLE;
   }
   motors.driveStraight(sensors.getGyroHeading(), sensors.readUltrasonicCm(), sensors.readLongRangeIR1());
   
@@ -191,6 +166,11 @@ STEP idle() {
   return STEP::IDLE;
 }
 
+
+STEP fire() {
+    if (runFireRoutine() == NEXT_STEP) return STEP::STOPPED;
+    return STEP::FIRE;
+}
 
 //Stop of Lipo Battery voltage is too low, to protect Battery
 STEP stopped() {
