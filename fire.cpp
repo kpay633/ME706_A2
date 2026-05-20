@@ -7,9 +7,9 @@ extern Motor   motors;
 extern Sensors sensors;
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
-#define PT_LEFT_PIN    A1
-#define PT_CENTRE_PIN  A2
-#define PT_RIGHT_PIN   A3
+#define PT_LEFT_PIN    A2
+#define PT_CENTRE_PIN  A3
+#define PT_RIGHT_PIN   A4
 
 // ── Tuning ────────────────────────────────────────────────────────────────────
 #define SWEEP_SPEED     60
@@ -68,7 +68,9 @@ STEP runFireRoutine() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void doSweep() {
+    
     if (!sweepInited) {
+        Serial.println(F("doSweep initing"));
         hotspot.angle     = 0.0f;
         hotspot.intensity = 1023;
         hotspot.valid     = false;        
@@ -89,8 +91,14 @@ static void doSweep() {
 
     // Raw reads — lower value means brighter fire, no inversion needed
     int ptL = analogRead(PT_LEFT_PIN);
+    Serial.print(F("PT_LEFT: "));
+    Serial.println(ptL);
     int ptC = analogRead(PT_CENTRE_PIN);
+    Serial.print(F("PT_CENTRE: "));
+    Serial.println(ptC);
     int ptR = analogRead(PT_RIGHT_PIN);
+    Serial.print(F("PT_RIGHT: "));
+    Serial.println(ptR);
 
     // Fuse: weight centre most heavily, keep in raw domain (lower = brighter)
     int fused = (int)(0.25f * ptL + 0.50f * ptC + 0.25f * ptR);

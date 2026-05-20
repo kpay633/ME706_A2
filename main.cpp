@@ -61,7 +61,7 @@ void setup(void) {
   main_previous_millis = 0;
 
   // Start USB Serial for PC-side monitoring (does not affect SerialCom logic)
-  Serial.begin(115200);
+  Serial.begin(9600);
   Serial.println(F("USB Serial active - monitoring only"));
 
   // Setup HC-12 on Hardware Serial1 (TX1=pin18, RX1=pin19) at HC-12 factory default baud rate
@@ -83,11 +83,9 @@ void loop(void)  //main loop
     case IDLE:
       machine_step = idle();
       break;
-
     case FIRE:
       machine_step = fire();
       break;
-
     case STOPPED:
       machine_step = stopped();
       break;
@@ -125,21 +123,23 @@ STEP initialising() {
 
   SerialCom->println(F("RUNNING STATE..."));
   Serial.println(F("D"));
-  return STEP::IDLE; //CHANGE THIS BACK TO IDLE() IN FUTURE
+  return STEP::IDLE;
 }
 
 STEP idle() {
   static unsigned long previous_millis;
-  char key;
-  key = read_serial_command();
-  if(key == 'h'){
-    return STEP::IDLE;
-  } else if (key == 't'){
-    return STEP::IDLE;
-  }
-  motors.driveStraight(sensors.getGyroHeading(), sensors.readUltrasonicCm(), sensors.readLongRangeIR1());
+  Serial.println(F("IDLE"));
+
+  // char key;
+  // key = read_serial_command();
+  // if(key == 'h'){
+  //   return STEP::IDLE;
+  // } else if (key == 't'){
+  //   return STEP::IDLE;
+  // }
+  // motors.driveStraight(sensors.getGyroHeading(), sensors.readUltrasonicCm(), sensors.readLongRangeIR1());
   
-  fast_flash_double_LED_builtin();
+  // fast_flash_double_LED_builtin();
   //motors.isTurnComplete(sensors.getGyroHeading());
 
 #ifndef NO_BATTERY_V_OK
@@ -163,7 +163,7 @@ STEP idle() {
       pos = 0;
     }
   }
-  return STEP::IDLE;
+  return STEP::FIRE;
 }
 
 
