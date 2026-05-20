@@ -81,8 +81,11 @@ static void doSweep() {
     }
 
     float heading = sensors.getGyroHeading();
+    Serial.print(F("Heading: "));
+    Serial.println(heading);
 
-    if (heading >= 358.0f) {
+
+    if (heading == 180.0f) {
         motors.stop();
         sweepInited = false;
         subState    = FS_TURN;
@@ -117,6 +120,7 @@ static void doSweep() {
 
 static void doTurn() {
     if (!hotspot.valid) { subState = FS_APPROACH; return; }
+    Serial.println(F("doTurn starting"));
 
     float error = hotspot.angle - sensors.getGyroHeading();
 
