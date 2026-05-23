@@ -13,10 +13,19 @@ extern Sensors sensors;
 
 // ── Tuning ────────────────────────────────────────────────────────────────────
 #define SWEEP_SPEED     60
-#define TURN_SPEED      60
-#define TURN_TOLERANCE   5.0f
-#define APPROACH_SPEED  70
-#define CLOSE_THRESH   300     // raw analogRead — below this means close enough
+#define TURN_SPEED      60   // these are unused rn
+
+
+#define TURN_TOLERANCE            5.0f
+#define APPROACH_SPEED            180
+#define STRAFE_SPEED              180
+
+#define CLOSE_THRESH              300     // PT centre raw threshold: lower means close/bright enough
+#define FRONT_OBSTACLE_CM         25.0f   // obstacle detected in front if ultrasonic < this
+#define MAX_STRAFE_TIME_MS        900     // tune so this is about 20 cm sideways on your robot
+
+#define PARTIAL_SCAN_LIMIT_DEG    75.0f   // one-sided relock scan
+#define RELIGHT_TURN_TOLERANCE    5.0f
 
 // ── Hotspot ───────────────────────────────────────────────────────────────────
 // intensity here is a RAW analogRead value — LOWER means brighter/hotter
@@ -31,6 +40,19 @@ enum FireSubState {
 static FireSubState subState    = FS_SWEEP;
 static int          fireIndex   = 0;
 static bool         sweepInited = false;
+
+enum AvoidPhase {
+    AV_CHOOSE_SIDE,
+    AV_STRAFE,
+    AV_RELOCK_SCAN,
+    AV_TURN_TO_LIGHT
+  };
+
+static AvoidPhase avoidPhase = AV_CHOOSE_SIDE;
+static bool avoidInited = false;
+static bool avoidLeft = true;
+static unsigned long avoidStartMs = 0;
+static Hotspot relockHotspot = {0.0f, 1023, false};
 
 // ── Forward declarations ──────────────────────────────────────────────────────
 static void doSweep();
@@ -114,6 +136,17 @@ static void doSweep() {
     }
 }
 
+
+// helper function for turning
+
+static float wrapAngleError(float target, float current) {
+    float error = target - current;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    return error;
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // doTurn — spin to face the stored hotspot heading
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +176,7 @@ static void doTurn() {
 
 static void doApproach() {
     int ptC = analogRead(PT_CENTRE_PIN);
+    float us = sensors.readUltrasonicCm();
 
     if (ptC <= CLOSE_THRESH) {
         motors.stop();
@@ -150,10 +184,112 @@ static void doApproach() {
         return;
     }
 
-    motors.driveForward();   // simple, no PID fighting itself
+    if (us > 0.0f && us < FRONT_OBSTACLE_CM) {
+        motors.stop();
+        avoidInited = false;
+        avoidPhase = AV_CHOOSE_SIDE;
+        subState = FS_AVOID;
+        return;
+    }
+
+    motors.setSpeed(APPROACH_SPEED);
+    motors.driveForward();
 }
 
-static void doAvoid()      { }
+static void doAvoid() {
+  if (!avoidInited) {
+    avoidPhase = AV_CHOOSE_SIDE;
+    relockHotspot.angle = 0.0f;
+    relockHotspot.intensity = 1023;
+    relockHotspot.valid = false;
+    avoidInited = true;
+  }
+
+  switch (avoidPhase) {
+    case AV_CHOOSE_SIDE: {
+      uint16_t leftSpace  = sensors.readLongRangeIR1();
+      uint16_t rightSpace = sensors.readLongRangeIR2();
+
+      // IR sensors are distance sensors: larger value = more space
+      avoidLeft = (leftSpace >= rightSpace);
+
+      motors.setSpeed(STRAFE_SPEED);
+      avoidStartMs = millis();
+      avoidPhase = AV_STRAFE;
+      return;
+    }
+
+    case AV_STRAFE: {
+      if (avoidLeft) motors.strafeLeft();
+      else           motors.strafeRight();
+
+      if (millis() - avoidStartMs >= MAX_STRAFE_TIME_MS) {
+        motors.stop();
+
+        sensors.ZeroGyroHeading();
+        relockHotspot.angle = 0.0f;
+        relockHotspot.intensity = 1023;
+        relockHotspot.valid = false;
+
+        motors.setSpeed(TURN_SPEED);
+
+        // strafed left => light is now on the right
+        if (avoidLeft) motors.rotateClockwise();
+        else           motors.rotateCounterClockwise();
+
+        avoidPhase = AV_RELOCK_SCAN;
+      }
+      return;
+    }
+
+    case AV_RELOCK_SCAN: {
+      float heading = sensors.getGyroHeading();
+
+      int ptL = analogRead(PT_LEFT_PIN);
+      int ptC = analogRead(PT_CENTRE_PIN);
+      int ptR = analogRead(PT_RIGHT_PIN);
+      int fused = (int)(0.25f * ptL + 0.50f * ptC + 0.25f * ptR);
+
+      // PT sensors: lower value = brighter
+      if (fused < relockHotspot.intensity) {
+        relockHotspot.angle = heading;
+        relockHotspot.intensity = fused;
+        relockHotspot.valid = true;
+      }
+
+      if (heading >= PARTIAL_SCAN_LIMIT_DEG) {
+        motors.stop();
+
+        if (relockHotspot.valid) {
+          hotspot = relockHotspot;
+          avoidPhase = AV_TURN_TO_LIGHT;
+        } else {
+          avoidInited = false;
+          subState = FS_SWEEP;   // fallback if partial scan fails
+        }
+      }
+      return;
+    }
+
+    case AV_TURN_TO_LIGHT: {
+      float error = wrapAngleError(hotspot.angle, sensors.getGyroHeading());
+
+      if (fabsf(error) <= TURN_TOLERANCE) {
+        motors.stop();
+        avoidInited = false;
+        subState = FS_APPROACH;
+        return;
+      }
+
+      motors.setSpeed(TURN_SPEED);
+
+      if (error > 0) motors.rotateClockwise();
+      else           motors.rotateCounterClockwise();
+      return;
+    }
+  }
+}
+
 static void doAlign()      { }
 static void doExtinguish() { }
 
