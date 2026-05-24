@@ -30,7 +30,6 @@
 #include "fire.h"
 
 
-
 //#define NO_READ_GYRO  //Uncomment if GYRO is not attached.
 //#define NO_HC_SR04  //Uncomment if HC-SR04 ultrasonic ranging sensor is not attached.
 //#define NO_BATTERY_V_OK //Uncomment if BATTERY_V_OK if you do not care about battery damage.
@@ -49,7 +48,6 @@ HardwareSerial *SerialCom;
 
 unsigned long main_previous_millis = 0;
 
-int pos = 0;
 float gyro_vel;
 float gyro_angle = 0.0f;
 static STEP machine_step = STEP::INITIALISING;
@@ -58,7 +56,7 @@ bool started = false;
 
 void setup(void) {
   turret_motor.attach(5);
-  turret_motor.write(90);
+  turret_motor.write(90);  // Lock turret straight ahead; robot does the sweep.
   pinMode(LED_BUILTIN, OUTPUT);
   main_previous_millis = 0;
 
@@ -70,7 +68,7 @@ void setup(void) {
   Serial2.begin(115200);
 
   // SerialCom pointer now targets Serial1 (HC-12 wireless); all downstream calls unchanged
-  SerialCom = &Serial;
+  SerialCom = &Serial2;
   SerialCom->println(F("MECHENG706_Base_Code"));
   delay(1000);
   SerialCom->println(F("Setup...."));
@@ -106,7 +104,6 @@ STEP initialising() {
     motors.initialise(SerialCom);
     sensors.setSerial(SerialCom);
     started = true;
-    
     Serial.println(F("A"));
   }
 
@@ -158,8 +155,6 @@ STEP idle() {
     // SerialCom->print(", ");
 
     // motors.PrintDetails();
-
-
   }
   return STEP::FIRE;
 }
