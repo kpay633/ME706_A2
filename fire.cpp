@@ -12,9 +12,9 @@ extern Sensors sensors;
 
 #define SWEEP_SPEED     60
 #define TURN_SPEED      60
-#define TURN_TOLERANCE   3.0f
+#define TURN_TOLERANCE   5.0f
 #define APPROACH_SPEED  70
-#define CLOSE_THRESH   10
+#define CLOSE_THRESH   50
 
 struct Hotspot { float angle; int intensity; bool valid = false; };
 static Hotspot hotspot;
@@ -152,21 +152,21 @@ static void doTurn() {
         return;
     }
 
-    if (!targetSet) {
-        motors.SetTurnTarget(hotspot.angle);
-        targetSet = true;
-        Serial.print(F("[TURN] Target set to "));
-        Serial.println(hotspot.angle);
-    }
+    motors.SetTurnTarget(targetAngle);
+    targetSet = true;
 
     if (motors.isTurnComplete(sensors.getGyroHeading())) {
-        Serial.println(F("[TURN] Complete — moving to APPROACH"));
+        // Serial.print("Gyro: "); 
+        // Serial.println(sensors.getGyroHeading());
         targetSet = false;
-        subState  = FS_APPROACH;
+    } else {
+        motors.PrintDetails();
     }
+    break;
 }
 
-
+    // float current = sensors.getGyroHeading();
+    // float error   = hotspot.angle - current;
 
     // while (error >  180.0f) error -= 360.0f;
     // while (error < -180.0f) error += 360.0f;
@@ -196,7 +196,7 @@ static void doTurn() {
     //     Serial.println(F("[TURN] Rotating clockwise"));
     //     motors.rotateClockwise();
     // }
-
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // doApproach
