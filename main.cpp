@@ -54,6 +54,7 @@ float gyro_vel;
 float gyro_angle = 0.0f;
 static STEP machine_step = STEP::INITIALISING;
 bool started = false;
+ObstacleClearanceResult scanResult;
 
 
 void setup(void) {
@@ -166,27 +167,89 @@ STEP idle() {
 
 
 STEP fire() {
-  // Run a forward clearance sweep. If clear, drive forward for 5s.
-  ObstacleClearanceResult clr = checkForwardClearance();
-  if (SerialCom) {
-    SerialCom->print(F("[CLEAR] isClear="));
-    SerialCom->println(clr.isClear ? 1 : 0);
-    SerialCom->print(F("[CLEAR] closestAngleDeg="));
-    SerialCom->println(clr.closestObstacleAngleDeg);
-    SerialCom->print(F("[CLEAR] closestDistanceMm="));
-    SerialCom->println(clr.closestObstacleDistanceMm);
+  // State machine with clean separation — no interleaving of drive + avoid
+  enum FireState { 
+    FIRE_DRIVING, 
+    FIRE_SCANNING, 
+    FIRE_AVOIDING 
+  };
+  static FireState fireState = FIRE_DRIVING;
+  static bool driveTargetSet = false;
+  static unsigned long avoidUntilMs = 0;
+  static ObstacleClearanceResult obstacle;
+
+  const float DETECT_THRESHOLD_MM  = 300.0f;  // Wider detection zone
+  const float AVOID_THRESHOLD_MM   = 200.0f;  // Must be within robot width
+  const unsigned long STRAFE_MIN_MS = 500;      // At edge of avoidance threshold
+  const unsigned long STRAFE_MAX_MS = 2400;     // At/near centerline
+
+#ifndef NO_BATTERY_V_OK
+  if (!sensors.isBatteryVoltageOK()) return STEP::ERROR;
+#endif
+
+  switch (fireState) {
+
+    case FIRE_DRIVING:
+      if (!driveTargetSet) {
+        motors.setDriveStraightTarget(sensors.getGyroHeading());
+        driveTargetSet = true;
+      }
+      // Drive forward and start a scan
+      motors.driveStraight(sensors.getGyroHeading(), sensors.readUltrasonicCm(), sensors.readLongRangeIR1());
+      clearanceScanStart();
+      fireState = FIRE_SCANNING;
+      break;
+
+    case FIRE_SCANNING: {
+      // Keep driving while scan accumulates — but DO update drive each tick
+      motors.driveStraight(sensors.getGyroHeading(), sensors.readUltrasonicCm(), sensors.readLongRangeIR1());
+
+      if (clearanceScanStep(scanResult)) {
+        // Scan complete — check result
+        if (!scanResult.isClear && 
+            fabsf(scanResult.closestObstacleOffsetMm) < AVOID_THRESHOLD_MM &&
+            scanResult.closestObstacleDistanceMm < DETECT_THRESHOLD_MM) 
+        {
+          obstacle = scanResult;
+          motors.stop();
+
+          if (obstacle.closestObstacleOffsetMm > 0.0f) {
+            motors.strafeRight();
+            Serial.print(F("[AVOID] Strafing RIGHT, offset="));
+          } else {
+            motors.strafeLeft();
+            Serial.print(F("[AVOID] Strafing LEFT, offset="));
+          }
+          Serial.print(obstacle.closestObstacleOffsetMm);
+          Serial.print(F(" dist="));
+          Serial.println(obstacle.closestObstacleDistanceMm);
+
+          float offsetRatio = fabsf(obstacle.closestObstacleOffsetMm) / AVOID_THRESHOLD_MM;
+          if (offsetRatio > 1.0f) offsetRatio = 1.0f;
+          unsigned long strafeMs = (unsigned long)(STRAFE_MAX_MS - (STRAFE_MAX_MS - STRAFE_MIN_MS) * offsetRatio);
+          if (strafeMs < STRAFE_MIN_MS) strafeMs = STRAFE_MIN_MS;
+
+          avoidUntilMs = millis() + strafeMs;
+          fireState = FIRE_AVOIDING;
+        } else {
+          // Clear — go back to driving and start next scan
+          fireState = FIRE_DRIVING;
+        }
+      }
+      break;
+    }
+
+    case FIRE_AVOIDING:
+      // Do nothing — just wait out the strafe duration
+      if (millis() >= avoidUntilMs) {
+        motors.stop();
+        Serial.println(F("[AVOID] Done — resuming drive"));
+        fireState = FIRE_DRIVING;
+      }
+      break;
   }
 
-  if (clr.isClear) {
-    if (SerialCom) SerialCom->println(F("[ACTION] Path clear — driving forward 5s"));
-    motors.driveForward();
-    delay(5000);
-    motors.stop();
-  } else {
-    if (SerialCom) SerialCom->println(F("[ACTION] Obstacle detected — not driving"));
-  }
-
-  return STEP::STOPPED;
+  return STEP::FIRE;
 }
 
 //Stop of Lipo Battery voltage is too low, to protect Battery
@@ -219,7 +282,7 @@ STEP stopped() {
 }
 
 STEP error() {
-  // Route ERROR handling through the existing safe stopped behavior.
+  // Route ERROR through existing safe stopped behavior.
   return stopped();
 }
 
@@ -238,6 +301,7 @@ void fast_flash_double_LED_builtin() {
     }
   }
 }
+
 void slow_flash_LED_builtin() {
   static unsigned long slow_flash_millis;
   if (millis() - slow_flash_millis > 2000) {

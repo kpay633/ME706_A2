@@ -22,10 +22,10 @@ static constexpr float CLEARANCE_WIDTH_MM  = 250.0f;
 static constexpr float CLEARANCE_DEPTH_MM  = 400.0f;
 static constexpr float SENSOR_OFFSET_MM    = 50.0f;
 static constexpr float CLEARANCE_HALF_WIDTH_MM = CLEARANCE_WIDTH_MM * 0.5f;
-static constexpr int    SCAN_START_DEG      = 0;
-static constexpr int    SCAN_END_DEG        = 180;
-static constexpr int    SCAN_STEP_DEG       = 5;
-static constexpr uint16_t SERVO_SETTLE_MS   = 40;
+static constexpr int    SCAN_START_DEG      = 30;
+static constexpr int    SCAN_END_DEG        = 150;
+static constexpr int    SCAN_STEP_DEG       = 6;
+static constexpr uint16_t SERVO_SETTLE_MS   = 13;
 static constexpr float   DEG_TO_RAD_SCALE   = 3.14159265f / 180.0f;
 
 struct Hotspot { float angle; int intensity; bool valid = false; };
@@ -55,7 +55,6 @@ void resetFireRoutine() {
 }
 
 STEP runFireRoutine() {
-    // Print current substate once per 500ms so we can see if it's stuck
     static unsigned long lastStateprint = 0;
     if (millis() - lastStateprint > 500) {
         lastStateprint = millis();
@@ -85,9 +84,6 @@ STEP runFireRoutine() {
     return CURRENT_STEP;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// doSweep
-// ─────────────────────────────────────────────────────────────────────────────
 static void doSweep() {
     if (!sweepInited) {
         Serial.println(F("[SWEEP] Init — zeroing gyro, starting rotation"));
@@ -102,8 +98,6 @@ static void doSweep() {
 
     float heading = sensors.getGyroHeading();
 
-    // Don't check for completion until we've actually rotated past 10°
-    // This prevents the gyro wrap-at-zero from triggering a false finish
     if (!sweepStarted && heading > 10.0f && heading < 350.0f) {
         sweepStarted = true;
         Serial.println(F("[SWEEP] Rotation confirmed, now watching for 358°"));
@@ -114,7 +108,6 @@ static void doSweep() {
     int ptR = analogRead(PT_RIGHT_PIN);
     int fused = (int)(0.25f * ptL + 0.50f * ptC + 0.25f * ptR);
 
-    // Print sensor readings every 200ms so we can see them without flooding
     static unsigned long lastSweepPrint = 0;
     if (millis() - lastSweepPrint > 200) {
         lastSweepPrint = millis();
@@ -154,9 +147,6 @@ static void doSweep() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// doTurn
-// ─────────────────────────────────────────────────────────────────────────────
 static void doTurn() {
     if (!hotspot.valid) {
         Serial.println(F("[TURN] No valid hotspot — skipping to APPROACH"));
@@ -178,41 +168,6 @@ static void doTurn() {
     }
 }
 
-
-
-    // while (error >  180.0f) error -= 360.0f;
-    // while (error < -180.0f) error += 360.0f;
-
-    // static unsigned long lastTurnPrint = 0;
-    // if (millis() - lastTurnPrint > 200) {
-    //     lastTurnPrint = millis();
-    //     Serial.print(F("[TURN] target="));
-    //     Serial.print(hotspot.angle);
-    //     Serial.print(F("  current="));
-    //     Serial.print(current);
-    //     Serial.print(F("  error="));
-    //     Serial.println(error);
-    // }
-
-    // if (fabsf(error) <= TURN_TOLERANCE) {
-    //     motors.stop();
-    //     Serial.println(F("[TURN] Within tolerance — moving to APPROACH"));
-    //     subState = FS_APPROACH;
-    //     return;
-    // }
-
-    // if (error > 0) {
-    //     Serial.println(F("[TURN] Rotating counter-clockwise"));
-    //     motors.rotateCounterClockwise();
-    // } else {
-    //     Serial.println(F("[TURN] Rotating clockwise"));
-    //     motors.rotateClockwise();
-    // }
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// doApproach
-// ─────────────────────────────────────────────────────────────────────────────
 static void doApproach() {
     int ptC = analogRead(PT_CENTRE_PIN);
 
@@ -239,14 +194,13 @@ static void doAvoid()      { Serial.println(F("[AVOID] stub")); }
 static void doAlign()      { Serial.println(F("[ALIGN] stub")); }
 static void doExtinguish() { Serial.println(F("[EXTINGUISH] stub")); }
 
-static void doCheckObstacle(Servo servo) {
-    Serial.println("Checking obstacles");
-}
-
+// ─────────────────────────────────────────────────────────────────────────────
+// Blocking clearance scan — geometry fixed
+// ─────────────────────────────────────────────────────────────────────────────
 ObstacleClearanceResult checkForwardClearance() {
     ObstacleClearanceResult result;
-    result.isClear = true;
-    result.closestObstacleAngleDeg = -1.0f;
+    result.isClear                   = true;
+    result.closestObstacleOffsetMm   = 0.0f;
     result.closestObstacleDistanceMm = -1.0f;
 
     float closestDistanceMm = 1.0e9f;
@@ -255,38 +209,110 @@ ObstacleClearanceResult checkForwardClearance() {
         turret_motor.write(servoAngleDeg);
         delay(SERVO_SETTLE_MS);
 
-        float distanceCm = sensors.readUltrasonicCm();
-        if (distanceCm <= 0.0f) {
-            continue;
-        }
+        float distanceCm = sensors.pingNowCm();
+        if (distanceCm <= 0.0f) continue;
 
         float distanceMm = distanceCm * 10.0f;
-        float bearingDeg = (float)servoAngleDeg - 90.0f;
+        float bearingDeg = (float)servoAngleDeg - 90.0f;  // 0° = straight ahead
         float bearingRad = bearingDeg * DEG_TO_RAD_SCALE;
 
-        // Convert the polar reading into robot-frame coordinates. The sensor is
-        // mounted on an arc around the servo center, so both the sensor origin
-        // and the measured point move with the servo angle.
-        float sensorXMm = SENSOR_OFFSET_MM * cosf(bearingRad);
-        float sensorYMm = SENSOR_OFFSET_MM * sinf(bearingRad);
-        float obstacleXMm = sensorXMm + distanceMm * cosf(bearingRad);
-        float obstacleYMm = sensorYMm + distanceMm * sinf(bearingRad);
+        // Robot-frame coords: forward = cos(bearing), lateral = sin(bearing)
+        float fwdMm     = SENSOR_OFFSET_MM + distanceMm * cosf(bearingRad);
+        float lateralMm = distanceMm * sinf(bearingRad);
 
         bool withinForwardBox =
-            obstacleXMm >= 0.0f &&
-            obstacleXMm <= CLEARANCE_DEPTH_MM &&
-            fabsf(obstacleYMm) <= CLEARANCE_HALF_WIDTH_MM;
+            fwdMm >= 0.0f &&
+            fwdMm <= CLEARANCE_DEPTH_MM &&
+            fabsf(lateralMm) <= CLEARANCE_HALF_WIDTH_MM;
 
         if (withinForwardBox && distanceMm < closestDistanceMm) {
-            closestDistanceMm = distanceMm;
-            result.isClear = false;
-            result.closestObstacleAngleDeg = bearingDeg;
+            closestDistanceMm                = distanceMm;
+            result.isClear                   = false;
+            result.closestObstacleOffsetMm   = lateralMm;
             result.closestObstacleDistanceMm = distanceMm;
         }
     }
 
     turret_motor.write(90);
     delay(SERVO_SETTLE_MS);
-
     return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Non-blocking clearance scanner — geometry fixed
+// ─────────────────────────────────────────────────────────────────────────────
+static int           nb_scanAngleDeg    = SCAN_START_DEG;
+static unsigned long nb_lastMs          = 0;
+static bool          nb_scanning        = false;
+static float         nb_closestDistMm   = 1.0e9f;
+static float         nb_closestOffsetMm = 0.0f;
+
+void clearanceScanStart() {
+    nb_scanAngleDeg    = SCAN_START_DEG;
+    nb_scanning        = true;
+    nb_lastMs          = 0;
+    nb_closestDistMm   = 1.0e9f;
+    nb_closestOffsetMm = 0.0f;
+    turret_motor.write(nb_scanAngleDeg);
+}
+
+bool clearanceScanStep(ObstacleClearanceResult &out) {
+    if (!nb_scanning) {
+        out.isClear                   = true;
+        out.closestObstacleOffsetMm   = 0.0f;
+        out.closestObstacleDistanceMm = -1.0f;
+        return true;
+    }
+
+    unsigned long now = millis();
+
+    if (nb_lastMs == 0) {
+        turret_motor.write(nb_scanAngleDeg);
+        nb_lastMs = now;
+        return false;
+    }
+
+    if (now - nb_lastMs < SERVO_SETTLE_MS) return false;
+
+    float distanceCm = sensors.pingNowCm();
+    if (distanceCm > 0.0f) {
+        float distanceMm = distanceCm * 10.0f;
+        float bearingDeg = (float)nb_scanAngleDeg - 90.0f;  // 0° = straight ahead
+        float bearingRad = bearingDeg * DEG_TO_RAD_SCALE;
+
+        // Robot-frame coords: forward = cos(bearing), lateral = sin(bearing)
+        float fwdMm     = SENSOR_OFFSET_MM + distanceMm * cosf(bearingRad);
+        float lateralMm = distanceMm * sinf(bearingRad);
+
+        bool withinForwardBox =
+            fwdMm >= 0.0f &&
+            fwdMm <= CLEARANCE_DEPTH_MM &&
+            fabsf(lateralMm) <= CLEARANCE_HALF_WIDTH_MM;
+
+        if (withinForwardBox && distanceMm < nb_closestDistMm) {
+            nb_closestDistMm   = distanceMm;
+            nb_closestOffsetMm = lateralMm;
+        }
+    }
+
+    nb_scanAngleDeg += SCAN_STEP_DEG;
+    nb_lastMs = 0;
+
+    if (nb_scanAngleDeg > SCAN_END_DEG) {
+        nb_scanning = false;
+        turret_motor.write(90);
+
+        if (nb_closestDistMm < 1.0e8f) {
+            out.isClear                   = false;
+            out.closestObstacleOffsetMm   = nb_closestOffsetMm;
+            out.closestObstacleDistanceMm = nb_closestDistMm;
+        } else {
+            out.isClear                   = true;
+            out.closestObstacleOffsetMm   = 0.0f;
+            out.closestObstacleDistanceMm = -1.0f;
+        }
+        return true;
+    }
+
+    return false;
 }

@@ -12,7 +12,7 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  _driveStraightTargetAng(0.0f),
 	  _driveStraightTargetSideDist(0.0f),
 	  _driveStraightTargetEndDist(0.0f),
-	  _driveStraightKp(60.0f),
+	  _driveStraightKp(10.0f),
 	  //_driveStraightKi(0.1f),
 	  //_driveStraightKd(0.1f),
 	  _driveStraightKff(0.0f),

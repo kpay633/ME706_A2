@@ -3,7 +3,8 @@
 
 struct ObstacleClearanceResult {
 	bool isClear;
-	float closestObstacleAngleDeg;
+	// Signed offset from the robot center line in mm: negative = left, positive = right.
+	float closestObstacleOffsetMm;
 	float closestObstacleDistanceMm;
 };
 
@@ -18,5 +19,11 @@ void resetFireRoutine();
 // Sweep the front-mounted ultrasonic sensor across 0..180 degrees and check
 // whether the clearance box in front of the robot is free of obstacles.
 ObstacleClearanceResult checkForwardClearance();
+
+// Non-blocking scanner API: call `clearanceScanStart()` to begin a sweep,
+// then repeatedly call `clearanceScanStep(out)` from your main loop until it
+// returns true and `out` is filled with the final result.
+void clearanceScanStart();
+bool clearanceScanStep(ObstacleClearanceResult &out);
 
 
