@@ -6,24 +6,19 @@
 extern Motor   motors;
 extern Sensors sensors;
 
-// ── Pins ──────────────────────────────────────────────────────────────────────
 #define PT_LEFT_PIN    A2
 #define PT_CENTRE_PIN  A3
 #define PT_RIGHT_PIN   A4
 
-// ── Tuning ────────────────────────────────────────────────────────────────────
 #define SWEEP_SPEED     60
 #define TURN_SPEED      60
 #define TURN_TOLERANCE   5.0f
 #define APPROACH_SPEED  70
-#define CLOSE_THRESH   300     // raw analogRead — below this means close enough
+#define CLOSE_THRESH   300
 
-// ── Hotspot ───────────────────────────────────────────────────────────────────
-// intensity here is a RAW analogRead value — LOWER means brighter/hotter
 struct Hotspot { float angle; int intensity; bool valid = false; };
 static Hotspot hotspot;
 
-// ── Sub-states ────────────────────────────────────────────────────────────────
 enum FireSubState {
     FS_SWEEP, FS_TURN, FS_APPROACH,
     FS_AVOID, FS_ALIGN, FS_EXTINGUISH, FS_DONE
@@ -31,18 +26,14 @@ enum FireSubState {
 static FireSubState subState    = FS_SWEEP;
 static int          fireIndex   = 0;
 static bool         sweepInited = false;
+static bool         sweepStarted = false;
 
-// ── Forward declarations ──────────────────────────────────────────────────────
 static void doSweep();
 static void doTurn();
 static void doApproach();
 static void doAvoid();
 static void doAlign();
 static void doExtinguish();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public
-// ─────────────────────────────────────────────────────────────────────────────
 
 void resetFireRoutine() {
     subState    = FS_SWEEP;
@@ -51,191 +42,173 @@ void resetFireRoutine() {
 }
 
 STEP runFireRoutine() {
+    // Print current substate once per 500ms so we can see if it's stuck
+    static unsigned long lastStateprint = 0;
+    if (millis() - lastStateprint > 500) {
+        lastStateprint = millis();
+        Serial.print(F("[FSM] subState = "));
+        switch (subState) {
+            case FS_SWEEP:      Serial.println(F("FS_SWEEP"));      break;
+            case FS_TURN:       Serial.println(F("FS_TURN"));       break;
+            case FS_APPROACH:   Serial.println(F("FS_APPROACH"));   break;
+            case FS_AVOID:      Serial.println(F("FS_AVOID"));      break;
+            case FS_ALIGN:      Serial.println(F("FS_ALIGN"));      break;
+            case FS_EXTINGUISH: Serial.println(F("FS_EXTINGUISH")); break;
+            case FS_DONE:       Serial.println(F("FS_DONE"));       break;
+        }
+    }
+
     switch (subState) {
         case FS_SWEEP:      doSweep();      break;
-        case FS_TURN:       doTurn();        break;
-        case FS_APPROACH:   doApproach();    break;
-        case FS_AVOID:      doAvoid();       break;
-        case FS_ALIGN:      doAlign();       break;
-        case FS_EXTINGUISH: doExtinguish();  break;
-        case FS_DONE:       return NEXT_STEP;
+        case FS_TURN:       doTurn();       break;
+        case FS_APPROACH:   doApproach();   break;
+        case FS_AVOID:      doAvoid();      break;
+        case FS_ALIGN:      doAlign();      break;
+        case FS_EXTINGUISH: doExtinguish(); break;
+        case FS_DONE:
+            Serial.println(F("[FSM] FS_DONE reached — returning NEXT_STEP to main"));
+            return NEXT_STEP;
     }
     return CURRENT_STEP;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// doSweep — spin 360°, record the heading where raw PT read was lowest
+// doSweep
 // ─────────────────────────────────────────────────────────────────────────────
-
 static void doSweep() {
-    
     if (!sweepInited) {
-        Serial.println(F("doSweep initing"));
+        Serial.println(F("[SWEEP] Init — zeroing gyro, starting rotation"));
         hotspot.angle     = 0.0f;
         hotspot.intensity = 1023;
-        hotspot.valid     = false;        
+        hotspot.valid     = false;
         sweepInited  = true;
         sensors.ZeroGyroHeading();
-        motors.rotateClockwise();
+        motors.rotateCounterClockwise();
         return;
     }
 
     float heading = sensors.getGyroHeading();
-    Serial.print(F("Heading: "));
-    Serial.println(heading);
 
-
-    if (heading == 180.0f) {
-        motors.stop();
-        sweepInited = false;
-        subState    = FS_TURN;
-        return;
+    // Don't check for completion until we've actually rotated past 10°
+    // This prevents the gyro wrap-at-zero from triggering a false finish
+    if (!sweepStarted && heading > 10.0f && heading < 350.0f) {
+        sweepStarted = true;
+        Serial.println(F("[SWEEP] Rotation confirmed, now watching for 358°"));
     }
 
-    // Raw reads — lower value means brighter fire, no inversion needed
     int ptL = analogRead(PT_LEFT_PIN);
-    Serial.print(F("PT_LEFT: "));
-    Serial.println(ptL);
     int ptC = analogRead(PT_CENTRE_PIN);
-    Serial.print(F("PT_CENTRE: "));
-    Serial.println(ptC);
     int ptR = analogRead(PT_RIGHT_PIN);
-    Serial.print(F("PT_RIGHT: "));
-    Serial.println(ptR);
-
-    // Fuse: weight centre most heavily, keep in raw domain (lower = brighter)
     int fused = (int)(0.25f * ptL + 0.50f * ptC + 0.25f * ptR);
 
-    // Track the minimum — lowest raw value = brightest spot seen so far
+    // Print sensor readings every 200ms so we can see them without flooding
+    static unsigned long lastSweepPrint = 0;
+    if (millis() - lastSweepPrint > 200) {
+        lastSweepPrint = millis();
+        Serial.print(F("[SWEEP] heading="));
+        Serial.print(heading);
+        Serial.print(F("  ptL="));  Serial.print(ptL);
+        Serial.print(F("  ptC="));  Serial.print(ptC);
+        Serial.print(F("  ptR="));  Serial.print(ptR);
+        Serial.print(F("  fused=")); Serial.print(fused);
+        Serial.print(F("  bestSoFar="));
+        Serial.print(hotspot.intensity);
+        Serial.print(F(" @ "));
+        Serial.println(hotspot.angle);
+    }
+
     if (fused < hotspot.intensity) {
+        Serial.print(F("[SWEEP] New best! fused="));
+        Serial.print(fused);
+        Serial.print(F(" at heading="));
+        Serial.println(heading);
         hotspot.angle     = heading;
         hotspot.intensity = fused;
         hotspot.valid     = true;
     }
+
+    if (sweepStarted && heading >= 358.0f) {
+        motors.stop();
+        sweepInited = false;
+        Serial.println(F("[SWEEP] Complete."));
+        Serial.print(F("[SWEEP] Hotspot found: valid="));
+        Serial.print(hotspot.valid);
+        Serial.print(F("  angle="));
+        Serial.print(hotspot.angle);
+        Serial.print(F("  intensity="));
+        Serial.println(hotspot.intensity);
+        subState = FS_TURN;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// doTurn — spin to face the stored hotspot heading
+// doTurn
 // ─────────────────────────────────────────────────────────────────────────────
-
 static void doTurn() {
-    if (!hotspot.valid) { subState = FS_APPROACH; return; }
-    Serial.println(F("doTurn starting"));
-
-    float error = hotspot.angle - sensors.getGyroHeading();
-
-    while (error >  180.0f) error -= 360.0f;
-    while (error < -180.0f) error += 360.0f;
-
-    if (fabsf(error) <= TURN_TOLERANCE) {
-        motors.stop();
+    if (!hotspot.valid) {
+        Serial.println(F("[TURN] No valid hotspot — skipping to APPROACH"));
         subState = FS_APPROACH;
         return;
     }
 
-    if (error > 0) motors.rotateClockwise();
-    else           motors.rotateCounterClockwise();
+    float current = sensors.getGyroHeading();
+    float error   = hotspot.angle - current;
+
+    while (error >  180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+
+    static unsigned long lastTurnPrint = 0;
+    if (millis() - lastTurnPrint > 200) {
+        lastTurnPrint = millis();
+        Serial.print(F("[TURN] target="));
+        Serial.print(hotspot.angle);
+        Serial.print(F("  current="));
+        Serial.print(current);
+        Serial.print(F("  error="));
+        Serial.println(error);
+    }
+
+    if (fabsf(error) <= TURN_TOLERANCE) {
+        motors.stop();
+        Serial.println(F("[TURN] Within tolerance — moving to APPROACH"));
+        subState = FS_APPROACH;
+        return;
+    }
+
+    if (error > 0) {
+        Serial.println(F("[TURN] Rotating clockwise"));
+        motors.rotateClockwise();
+    } else {
+        Serial.println(F("[TURN] Rotating counter-clockwise"));
+        motors.rotateCounterClockwise();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// doApproach — drive forward until PTC raw read drops low enough
+// doApproach
 // ─────────────────────────────────────────────────────────────────────────────
-
 static void doApproach() {
     int ptC = analogRead(PT_CENTRE_PIN);
 
+    static unsigned long lastApproachPrint = 0;
+    if (millis() - lastApproachPrint > 200) {
+        lastApproachPrint = millis();
+        Serial.print(F("[APPROACH] ptC="));
+        Serial.print(ptC);
+        Serial.print(F("  threshold="));
+        Serial.println(CLOSE_THRESH);
+    }
+
     if (ptC <= CLOSE_THRESH) {
         motors.stop();
+        Serial.println(F("[APPROACH] Close enough — moving to DONE"));
         subState = FS_DONE;
         return;
     }
 
-    motors.driveForward();   // simple, no PID fighting itself
+    motors.driveForward();
 }
 
-static void doAvoid()      { }
-static void doAlign()      { }
-static void doExtinguish() { }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Implement later
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-// // ── Avoid state variables ─────────────────────────────────────────────────────
-// enum AvoidPhase { AV_STRAFE_CLEAR, AV_FORWARD_CLEAR, AV_STRAFE_BACK };
-// static AvoidPhase avoidPhase;
-// static uint32_t   avoidPhaseStart;
-// static bool       avoidLeft;
-
-
-
-// static STEP doAvoid() {
-//     // ── Initialise on first entry ──────────────────────────────────────────
-//     static bool inited = false;
-//     if (!inited) {
-//         // choose strafe direction based on which IR sensor sees more open space
-//         // higher reading = more reflected light = wall is closer, so pick the
-//         // side with the *lower* reading (more space)
-//         avoidLeft  = (sensors.readLeftIR() > sensors.readRightIR());
-//         avoidPhase = AV_STRAFE_CLEAR;
-//         avoidPhaseStart = millis();
-//         inited = true;
-//     }
-
-//     uint32_t elapsed = millis() - avoidPhaseStart;
-
-//     switch (avoidPhase) {
-
-//         // ── Phase 1: strafe sideways to get off the obstacle's line ──────
-//         case AV_STRAFE_CLEAR:
-//             if (avoidLeft)
-//                 motors.setSpeed(-STRAFE_SPEED, STRAFE_SPEED);   // strafe left
-//             else
-//                 motors.setSpeed(STRAFE_SPEED, -STRAFE_SPEED);   // strafe right
-
-//             if (elapsed >= STRAFE_DURATION_MS) {
-//                 motors.stop();
-//                 avoidPhase      = AV_FORWARD_CLEAR;
-//                 avoidPhaseStart = millis();
-//             }
-//             break;
-
-//         // ── Phase 2: drive forward until we're past the obstacle ────────
-//         case AV_FORWARD_CLEAR:
-//             motors.setSpeed(APPROACH_SPEED, APPROACH_SPEED);
-
-//             if (elapsed >= CLEAR_DURATION_MS) {
-//                 motors.stop();
-//                 avoidPhase      = AV_STRAFE_BACK;
-//                 avoidPhaseStart = millis();
-//             }
-//             break;
-
-//         // ── Phase 3: strafe back to re-centre on the flame ──────────────
-//         case AV_STRAFE_BACK:
-//             if (avoidLeft)
-//                 motors.setSpeed(STRAFE_SPEED, -STRAFE_SPEED);   // strafe right (undo)
-//             else
-//                 motors.setSpeed(-STRAFE_SPEED, STRAFE_SPEED);   // strafe left  (undo)
-
-//             if (elapsed >= REALIGN_DURATION_MS) {
-//                 motors.stop();
-//                 inited = false;   // reset for next obstacle encounter
-//                 return NEXT_STEP; // back to FS_APPROACH
-//             }
-//             break;
-//     }
-
-//     return CURRENT_STEP;
-// }
-
-// static STEP doAlign() {
-//     // alignToFire() logic here
-//     return CURRENT_STEP;
-// }
-
-// static STEP doExtinguish() {
-//     // extinguish() logic here
-//     return CURRENT_STEP;
-// }
+static void doAvoid()      { Serial.println(F("[AVOID] stub")); }
+static void doAlign()      { Serial.println(F("[ALIGN] stub")); }
+static void doExtinguish() { Serial.println(F("[EXTINGUISH] stub")); }
