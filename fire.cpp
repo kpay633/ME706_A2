@@ -349,3 +349,101 @@ static void doApproach() {
 static void doAvoid()      { Serial.println(F("[AVOID] stub")); }
 static void doAlign()      { Serial.println(F("[ALIGN] stub")); }
 static void doExtinguish() { Serial.println(F("[EXTINGUISH] stub")); }
+
+
+
+// kala changes here
+
+static void sweepHotspotCW() {
+    Serial.println(F("[SWEEP-CW] Sweeping clockwise 90° to relocate hotspot"));
+
+    float startHeading = sensors.getGyroHeading();
+    int   bestIntensity = 1023;
+    float bestAngle     = startHeading;
+
+    motors.rotateClockwise();
+
+    while (true) {
+        float heading = sensors.getGyroHeading();
+        int   ptC     = analogRead(PT_CENTRE_PIN);
+
+        if (ptC < bestIntensity) {
+            bestIntensity = ptC;
+            bestAngle     = heading;
+        }
+
+        // How far have we swept CW from start
+        float swept = heading - startHeading;
+        if (swept < 0.0f) swept += 360.0f;
+        if (swept >= 90.0f) break;
+
+        delay(5);
+    }
+
+    motors.stop();
+
+    // Only update hotspot if we found something brighter
+    if (bestIntensity < hotspot.intensity) {
+        hotspot.angle     = bestAngle;
+        hotspot.intensity = bestIntensity;
+        hotspot.valid     = true;
+        Serial.print(F("[SWEEP-CW] Updated hotspot: angle="));
+        Serial.print(bestAngle);
+        Serial.print(F("  intensity="));
+        Serial.println(bestIntensity);
+    } else {
+        Serial.println(F("[SWEEP-CW] No improvement — keeping existing hotspot"));
+    }
+}
+
+static void sweepHotspotCCW() {
+    Serial.println(F("[SWEEP-CCW] Sweeping counter-clockwise 90° to relocate hotspot"));
+
+    float startHeading  = sensors.getGyroHeading();
+    int   bestIntensity = 1023;
+    float bestAngle     = startHeading;
+
+    motors.rotateCounterClockwise();
+
+    while (true) {
+        float heading = sensors.getGyroHeading();
+        int   ptC     = analogRead(PT_CENTRE_PIN);
+
+        if (ptC < bestIntensity) {
+            bestIntensity = ptC;
+            bestAngle     = heading;
+        }
+
+        // How far have we swept CCW from start
+        float swept = startHeading - heading;
+        if (swept < 0.0f) swept += 360.0f;
+        if (swept >= 90.0f) break;
+
+        delay(5);
+    }
+
+    motors.stop();
+
+    if (bestIntensity < hotspot.intensity) {
+        hotspot.angle     = bestAngle;
+        hotspot.intensity = bestIntensity;
+        hotspot.valid     = true;
+        Serial.print(F("[SWEEP-CCW] Updated hotspot: angle="));
+        Serial.print(bestAngle);
+        Serial.print(F("  intensity="));
+        Serial.println(bestIntensity);
+    } else {
+        Serial.println(F("[SWEEP-CCW] No improvement — keeping existing hotspot"));
+    }
+}
+
+static void sweepBack(bool direction) {
+    // After vehicle strafes to avoid object, sweep again to find the hotspot if we lost it during the strafe.
+    // 0 = was strafe left, 1 = was strafe right 
+    Serial.println(F("[SWEEP-BACK] Starting sweep to relocate hotspot after avoidance"));
+    if (!direction) {
+        sweepHotspotCW();
+    } else {
+        sweepHotspotCCW();
+    }
+}
