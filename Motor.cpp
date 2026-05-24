@@ -8,7 +8,7 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  _leftRearPin(leftRearPin),
 	  _rightRearPin(rightRearPin),
 	  _rightFrontPin(rightFrontPin),
-	  _speed(200),
+	  _speed(100),
 	  _driveStraightTargetAng(0.0f),
 	  _driveStraightTargetSideDist(0.0f),
 	  _driveStraightTargetEndDist(0.0f),

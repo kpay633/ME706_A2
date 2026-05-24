@@ -14,7 +14,7 @@ extern Sensors sensors;
 #define TURN_SPEED      60
 #define TURN_TOLERANCE   5.0f
 #define APPROACH_SPEED  70
-#define CLOSE_THRESH   300
+#define CLOSE_THRESH   50
 
 struct Hotspot { float angle; int intensity; bool valid = false; };
 static Hotspot hotspot;
@@ -27,6 +27,7 @@ static FireSubState subState    = FS_SWEEP;
 static int          fireIndex   = 0;
 static bool         sweepInited = false;
 static bool         sweepStarted = false;
+static bool         targetSet = false;
 
 static void doSweep();
 static void doTurn();
@@ -151,37 +152,50 @@ static void doTurn() {
         return;
     }
 
-    float current = sensors.getGyroHeading();
-    float error   = hotspot.angle - current;
+    motors.SetTurnTarget(targetAngle);
+    targetSet = true;
 
-    while (error >  180.0f) error -= 360.0f;
-    while (error < -180.0f) error += 360.0f;
-
-    static unsigned long lastTurnPrint = 0;
-    if (millis() - lastTurnPrint > 200) {
-        lastTurnPrint = millis();
-        Serial.print(F("[TURN] target="));
-        Serial.print(hotspot.angle);
-        Serial.print(F("  current="));
-        Serial.print(current);
-        Serial.print(F("  error="));
-        Serial.println(error);
-    }
-
-    if (fabsf(error) <= TURN_TOLERANCE) {
-        motors.stop();
-        Serial.println(F("[TURN] Within tolerance — moving to APPROACH"));
-        subState = FS_APPROACH;
-        return;
-    }
-
-    if (error > 0) {
-        Serial.println(F("[TURN] Rotating clockwise"));
-        motors.rotateClockwise();
+    if (motors.isTurnComplete(sensors.getGyroHeading())) {
+        // Serial.print("Gyro: "); 
+        // Serial.println(sensors.getGyroHeading());
+        targetSet = false;
     } else {
-        Serial.println(F("[TURN] Rotating counter-clockwise"));
-        motors.rotateCounterClockwise();
+        motors.PrintDetails();
     }
+    break;
+}
+
+    // float current = sensors.getGyroHeading();
+    // float error   = hotspot.angle - current;
+
+    // while (error >  180.0f) error -= 360.0f;
+    // while (error < -180.0f) error += 360.0f;
+
+    // static unsigned long lastTurnPrint = 0;
+    // if (millis() - lastTurnPrint > 200) {
+    //     lastTurnPrint = millis();
+    //     Serial.print(F("[TURN] target="));
+    //     Serial.print(hotspot.angle);
+    //     Serial.print(F("  current="));
+    //     Serial.print(current);
+    //     Serial.print(F("  error="));
+    //     Serial.println(error);
+    // }
+
+    // if (fabsf(error) <= TURN_TOLERANCE) {
+    //     motors.stop();
+    //     Serial.println(F("[TURN] Within tolerance — moving to APPROACH"));
+    //     subState = FS_APPROACH;
+    //     return;
+    // }
+
+    // if (error > 0) {
+    //     Serial.println(F("[TURN] Rotating counter-clockwise"));
+    //     motors.rotateCounterClockwise();
+    // } else {
+    //     Serial.println(F("[TURN] Rotating clockwise"));
+    //     motors.rotateClockwise();
+    // }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
