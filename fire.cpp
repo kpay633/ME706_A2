@@ -1,10 +1,12 @@
 #include "main.h"
 #include "fire.h"
+#include <Servo.h>
 #include "Motor.h"
 #include "Sensors.h"
 
 extern Motor   motors;
 extern Sensors sensors;
+extern Servo    turret_motor;
 
 #define PT_LEFT_PIN    A2
 #define PT_CENTRE_PIN  A3
@@ -15,6 +17,16 @@ extern Sensors sensors;
 #define TURN_TOLERANCE   3.0f
 #define APPROACH_SPEED  70
 #define CLOSE_THRESH   10
+
+static constexpr float CLEARANCE_WIDTH_MM  = 250.0f;
+static constexpr float CLEARANCE_DEPTH_MM  = 400.0f;
+static constexpr float SENSOR_OFFSET_MM    = 50.0f;
+static constexpr float CLEARANCE_HALF_WIDTH_MM = CLEARANCE_WIDTH_MM * 0.5f;
+static constexpr int    SCAN_START_DEG      = 0;
+static constexpr int    SCAN_END_DEG        = 180;
+static constexpr int    SCAN_STEP_DEG       = 5;
+static constexpr uint16_t SERVO_SETTLE_MS   = 40;
+static constexpr float   DEG_TO_RAD_SCALE   = 3.14159265f / 180.0f;
 
 struct Hotspot { float angle; int intensity; bool valid = false; };
 static Hotspot hotspot;
@@ -226,3 +238,55 @@ static void doApproach() {
 static void doAvoid()      { Serial.println(F("[AVOID] stub")); }
 static void doAlign()      { Serial.println(F("[ALIGN] stub")); }
 static void doExtinguish() { Serial.println(F("[EXTINGUISH] stub")); }
+
+static void doCheckObstacle(Servo servo) {
+    Serial.println("Checking obstacles");
+}
+
+ObstacleClearanceResult checkForwardClearance() {
+    ObstacleClearanceResult result;
+    result.isClear = true;
+    result.closestObstacleAngleDeg = -1.0f;
+    result.closestObstacleDistanceMm = -1.0f;
+
+    float closestDistanceMm = 1.0e9f;
+
+    for (int servoAngleDeg = SCAN_START_DEG; servoAngleDeg <= SCAN_END_DEG; servoAngleDeg += SCAN_STEP_DEG) {
+        turret_motor.write(servoAngleDeg);
+        delay(SERVO_SETTLE_MS);
+
+        float distanceCm = sensors.readUltrasonicCm();
+        if (distanceCm <= 0.0f) {
+            continue;
+        }
+
+        float distanceMm = distanceCm * 10.0f;
+        float bearingDeg = (float)servoAngleDeg - 90.0f;
+        float bearingRad = bearingDeg * DEG_TO_RAD_SCALE;
+
+        // Convert the polar reading into robot-frame coordinates. The sensor is
+        // mounted on an arc around the servo center, so both the sensor origin
+        // and the measured point move with the servo angle.
+        float sensorXMm = SENSOR_OFFSET_MM * cosf(bearingRad);
+        float sensorYMm = SENSOR_OFFSET_MM * sinf(bearingRad);
+        float obstacleXMm = sensorXMm + distanceMm * cosf(bearingRad);
+        float obstacleYMm = sensorYMm + distanceMm * sinf(bearingRad);
+
+        bool withinForwardBox =
+            obstacleXMm >= 0.0f &&
+            obstacleXMm <= CLEARANCE_DEPTH_MM &&
+            fabsf(obstacleYMm) <= CLEARANCE_HALF_WIDTH_MM;
+
+        if (withinForwardBox && distanceMm < closestDistanceMm) {
+            closestDistanceMm = distanceMm;
+            result.isClear = false;
+            result.closestObstacleAngleDeg = bearingDeg;
+            result.closestObstacleDistanceMm = distanceMm;
+        }
+    }
+
+    turret_motor.write(90);
+    delay(SERVO_SETTLE_MS);
+
+    return result;
+}

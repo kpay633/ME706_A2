@@ -166,8 +166,27 @@ STEP idle() {
 
 
 STEP fire() {
-    if (runFireRoutine() == NEXT_STEP) return STEP::STOPPED;
-    return STEP::FIRE;
+  // Run a forward clearance sweep. If clear, drive forward for 5s.
+  ObstacleClearanceResult clr = checkForwardClearance();
+  if (SerialCom) {
+    SerialCom->print(F("[CLEAR] isClear="));
+    SerialCom->println(clr.isClear ? 1 : 0);
+    SerialCom->print(F("[CLEAR] closestAngleDeg="));
+    SerialCom->println(clr.closestObstacleAngleDeg);
+    SerialCom->print(F("[CLEAR] closestDistanceMm="));
+    SerialCom->println(clr.closestObstacleDistanceMm);
+  }
+
+  if (clr.isClear) {
+    if (SerialCom) SerialCom->println(F("[ACTION] Path clear — driving forward 5s"));
+    motors.driveForward();
+    delay(5000);
+    motors.stop();
+  } else {
+    if (SerialCom) SerialCom->println(F("[ACTION] Obstacle detected — not driving"));
+  }
+
+  return STEP::STOPPED;
 }
 
 //Stop of Lipo Battery voltage is too low, to protect Battery
