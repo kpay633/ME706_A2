@@ -125,6 +125,14 @@ float Sensors::readUltrasonicCm() {
 }
 
 
+float Sensors::pingNowCm() {
+	unsigned long pingTime = _sonar.ping();
+	float rawCm = pingTime / 57.0f;
+	if (rawCm >= 3.0f) return rawCm;
+	return 0.0f;
+}
+
+
 // float Sensors::readUltrasonicCm() {
 //   unsigned long now = millis();
 //

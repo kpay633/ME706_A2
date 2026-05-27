@@ -18,6 +18,8 @@ public:
 	uint16_t readLongRangeIR2();
 
 	float readUltrasonicCm();
+	// Immediate raw ping (no filtering, no rate limiting). Returns 0.0 if out of range.
+	float pingNowCm();
 	void WarmUSFilter(uint8_t samples = 10);
 	void setUSStrictFilter(bool enabled) { _usStrictFilter = enabled; }
 	float getGyroHeading();
