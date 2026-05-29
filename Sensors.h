@@ -8,51 +8,67 @@
 
 class Sensors {
 public:
-	Sensors();
-	void setSerial(HardwareSerial *serialCom);
-	bool initialise();
+    Sensors();
+    void setSerial(HardwareSerial *serialCom);
+    bool initialise();
 
-	uint16_t readShortRangeIR1();
-	uint16_t readShortRangeIR2();
-	uint16_t readLongRangeIR1();
-	uint16_t readLongRangeIR2();
+    // ── Front short-range IR (forward-facing, front corners) ─────────────────
+    float readIRFrontLeft();    // irShort1 A13 — front-left  corner, fwd-facing
+    float readIRFrontRight();   // irShort2 A15 — front-right corner, fwd-facing
 
-	float readUltrasonicCm();
-	void WarmUSFilter(uint8_t samples = 10);
-	void setUSStrictFilter(bool enabled) { _usStrictFilter = enabled; }
-	float getGyroHeading();
-	bool isBatteryVoltageOK();
-	void ZeroGyroHeading();
+    // ── Rear long-range IR (sideways-facing, rear corners) ───────────────────
+    float readIRRearLeft();     // irLong1  A8  — rear-left  corner, faces left
+    float readIRRearRight();    // irLong2  A10 — rear-right corner, faces right
 
-	void printLongRangeIR2();
-	void printGyroZ();
-	void printUltrasonicRange();
+    // ── Legacy raw accessors (kept for backwards compat) ─────────────────────
+    uint16_t readShortRangeIR1();
+    uint16_t readShortRangeIR2();
+    uint16_t readLongRangeIR1();
+    uint16_t readLongRangeIR2();
+
+    // ── Ultrasonic ────────────────────────────────────────────────────────────
+    float readUltrasonicCm();
+    float pingNowCm();
+    void  WarmUSFilter(uint8_t samples = 10);
+    void  setUSStrictFilter(bool enabled) { _usStrictFilter = enabled; }
+
+    // ── IMU ───────────────────────────────────────────────────────────────────
+    float getGyroHeading();
+    void  ZeroGyroHeading();
+
+    // ── Battery ───────────────────────────────────────────────────────────────
+    bool isBatteryVoltageOK();
+
+    // ── Debug ─────────────────────────────────────────────────────────────────
+    void printLongRangeIR2();
+    void printGyroZ();
+    void printUltrasonicRange();
 
 private:
-	HardwareSerial *_serial;
-	Adafruit_BNO08x _bno08x;
-	sh2_SensorValue_t _sensorValue;
-	byte _lowVoltageCounter;
+    HardwareSerial   *_serial;
+    Adafruit_BNO08x   _bno08x;
+    sh2_SensorValue_t _sensorValue;
+    byte              _lowVoltageCounter;
 
-	// --- Gyro Variables ---
-	float _currentAbsoluteYaw;
-	float _yawOffset;
+    float _currentAbsoluteYaw;
+    float _yawOffset;
 
-	// --- Ultrasonic Filter Variables ---
-	unsigned long _usLastPollMs;
-	unsigned int  _usBuf[US_FILTER_SIZE];
-	uint8_t       _usBufIdx;
-	bool          _usBufFull;
-	float  _usFiltered;
-    bool _usStrictFilter = false;
+    unsigned long _usLastPollMs;
+    unsigned int  _usBuf[US_FILTER_SIZE];
+    uint8_t       _usBufIdx;
+    bool          _usBufFull;
+    float         _usFiltered;
+    bool          _usStrictFilter = false;
 
-	// SharpDistSensor (pin, median window size = 5)
-	SharpDistSensor _irShort1{A5, 5};
-	SharpDistSensor _irShort2{A3, 5};
-	SharpDistSensor _irLong1 {A2, 5};
-	SharpDistSensor _irLong2 {A15, 5};
+    // Front short-range: A13 (front-left), A15 (front-right)
+    // Rear  long-range:  A8  (rear-left),  A10 (rear-right)
+    // Constructor second arg = median window size (built-in averaging)
+    SharpDistSensor _irShort1{A13, 5};   // front-left,  forward-facing
+    SharpDistSensor _irShort2{A15, 5};   // front-right, forward-facing
+    SharpDistSensor _irLong1 {A8,  5};   // rear-left,   faces left
+    SharpDistSensor _irLong2 {A10, 5};   // rear-right,  faces right
 
-	NewPing _sonar{48, 49, 400};
+    NewPing _sonar{48, 49, 400};
 
-	static const uint8_t BATTERY_PIN = A0;
+    static const uint8_t BATTERY_PIN = A0;
 };
