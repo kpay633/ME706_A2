@@ -354,96 +354,40 @@ static void doExtinguish() { Serial.println(F("[EXTINGUISH] stub")); }
 
 // kala changes here
 
-static void sweepHotspotCW() {
-    Serial.println(F("[SWEEP-CW] Sweeping clockwise 90° to relocate hotspot"));
+static void realignToBrightspot(bool strafedLeft);
 
-    float startHeading = sensors.getGyroHeading();
-    int   bestIntensity = 1023;
-    float bestAngle     = startHeading;
+static void sweepBack(bool strafedLeft) {
+    realignToBrightspot(strafedLeft);
+}
 
-    motors.rotateClockwise();
 
-    while (true) {
-        float heading = sensors.getGyroHeading();
-        int   ptC     = analogRead(PT_CENTRE_PIN);
+static void realignToBrightspot(bool strafedLeft) {
+    Serial.println(strafedLeft ? F("[REALIGN] Strafed left — rotating CW to reacquire")
+                               : F("[REALIGN] Strafed right — rotating CCW to reacquire"));
 
-        if (ptC < bestIntensity) {
-            bestIntensity = ptC;
-            bestAngle     = heading;
+    const unsigned long timeout = 5000;
+    unsigned long startMs = millis();
+
+    while (millis() - startMs < timeout) {
+        int ptC = analogRead(PT_CENTRE_PIN);
+
+        Serial.print(F("[REALIGN] ptC=")); Serial.println(ptC);
+
+        // Fire reacquired when centre PT drops bright enough
+        if (ptC <= CLOSE_THRESH) {
+            motors.stop();
+            hotspot.angle = sensors.getGyroHeading();
+            Serial.print(F("[REALIGN] Reacquired at heading="));
+            Serial.println(hotspot.angle);
+            return;
         }
 
-        // How far have we swept CW from start
-        float swept = heading - startHeading;
-        if (swept < 0.0f) swept += 360.0f;
-        if (swept >= 90.0f) break;
+        if (strafedLeft) motors.rotateClockwise();
+        else             motors.rotateCounterClockwise();
 
-        delay(5);
+        delay(20);
     }
 
     motors.stop();
-
-    // Only update hotspot if we found something brighter
-    if (bestIntensity < hotspot.intensity) {
-        hotspot.angle     = bestAngle;
-        hotspot.intensity = bestIntensity;
-        hotspot.valid     = true;
-        Serial.print(F("[SWEEP-CW] Updated hotspot: angle="));
-        Serial.print(bestAngle);
-        Serial.print(F("  intensity="));
-        Serial.println(bestIntensity);
-    } else {
-        Serial.println(F("[SWEEP-CW] No improvement — keeping existing hotspot"));
-    }
-}
-
-static void sweepHotspotCCW() {
-    Serial.println(F("[SWEEP-CCW] Sweeping counter-clockwise 90° to relocate hotspot"));
-
-    float startHeading  = sensors.getGyroHeading();
-    int   bestIntensity = 1023;
-    float bestAngle     = startHeading;
-
-    motors.rotateCounterClockwise();
-
-    while (true) {
-        float heading = sensors.getGyroHeading();
-        int   ptC     = analogRead(PT_CENTRE_PIN);
-
-        if (ptC < bestIntensity) {
-            bestIntensity = ptC;
-            bestAngle     = heading;
-        }
-
-        // How far have we swept CCW from start
-        float swept = startHeading - heading;
-        if (swept < 0.0f) swept += 360.0f;
-        if (swept >= 90.0f) break;
-
-        delay(5);
-    }
-
-    motors.stop();
-
-    if (bestIntensity < hotspot.intensity) {
-        hotspot.angle     = bestAngle;
-        hotspot.intensity = bestIntensity;
-        hotspot.valid     = true;
-        Serial.print(F("[SWEEP-CCW] Updated hotspot: angle="));
-        Serial.print(bestAngle);
-        Serial.print(F("  intensity="));
-        Serial.println(bestIntensity);
-    } else {
-        Serial.println(F("[SWEEP-CCW] No improvement — keeping existing hotspot"));
-    }
-}
-
-static void sweepBack(bool direction) {
-    // After vehicle strafes to avoid object, sweep again to find the hotspot if we lost it during the strafe.
-    // 0 = was strafe left, 1 = was strafe right 
-    Serial.println(F("[SWEEP-BACK] Starting sweep to relocate hotspot after avoidance"));
-    if (!direction) {
-        sweepHotspotCW();
-    } else {
-        sweepHotspotCCW();
-    }
+    Serial.println(F("[REALIGN] Timeout — fire not reacquired"));
 }
