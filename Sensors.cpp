@@ -22,14 +22,19 @@ bool Sensors::initialise() {
     pinMode(ECHO_PIN, INPUT);
     digitalWrite(TRIG_PIN, LOW);
 
-    // NOTE: Coefficients below are placeholders matched to previously used
-    // Sharp models. If sensors have been swapped, re-calibrate these values.
-    // Short-range (GP2Y0A41SK0F approx): front-left A10, front-right A11
-    _irShort1.setPowerFitCoeffs(38329.8809f, -1.0894f, 86, 438);
-    _irShort2.setPowerFitCoeffs(38329.8809f, -1.0894f, 86, 438);
-    // Long-range (GP2Y0A02YK0F approx): rear-left A8, rear-right A9
-    _irLong1.setPowerFitCoeffs(179006.0322f, -1.2062f, 88, 488);
-    _irLong2.setPowerFitCoeffs(148265.9356f, -1.1997f, 81, 464);
+    // NOTE: Coefficients below are placeholders — re-calibrate on hardware.
+    // Sensor TYPES per physical mounting (pins unchanged):
+    //   FRONT sensors (_irShort1 A13, _irShort2 A15) are LONG-range parts.
+    //   SIDE  sensors (_irLong1  A8,  _irLong2  A10) are SHORT-range parts.
+    // (The _irShort/_irLong member names are historical and no longer reflect
+    //  the part type — they are kept only to avoid touching the pin wiring.)
+
+    // FRONT — long-range coefficients (GP2Y0A02YK0F approx)
+    _irShort1.setPowerFitCoeffs(179006.0322f, -1.2062f, 88, 488);  // front-left  A13
+    _irShort2.setPowerFitCoeffs(148265.9356f, -1.1997f, 81, 464);  // front-right A15
+    // SIDE — short-range coefficients (GP2Y0A41SK0F approx)
+    _irLong1.setPowerFitCoeffs(38329.8809f, -1.0894f, 86, 438);    // rear-left   A8
+    _irLong2.setPowerFitCoeffs(9033.3337f,  -0.8135f, 45, 421);    // rear-right  A10
 
     Wire.begin();
     delay(100);

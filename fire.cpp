@@ -16,7 +16,7 @@ extern Servo   turret_motor;
 // ─── Fire detection ───────────────────────────────────────────────────────────
 // PT raw ADC: LOWER = brighter = closer to flame. Fire reached when the centre
 // PT reads below this for several consecutive ticks WHILE driving at the flame.
-#define PT_FIRE_THRESH        100
+#define PT_FIRE_THRESH        50
 #define PT_FIRE_CONFIRM_TICKS  5     // consecutive ticks below threshold to confirm
 
 // ─── Sweep ────────────────────────────────────────────────────────────────────
@@ -49,14 +49,17 @@ static constexpr float    DEG2RAD           = 3.14159265f / 180.0f;
 static constexpr float FRONT_IR_TRIGGER_CM = 12.0f;  // front IR: obstacle ahead
 static constexpr float FRONT_IR_CLEAR_CM   = 18.0f;  // front IR: considered clear (hysteresis)
 static constexpr float SIDE_US_BLOCKED_CM  = 20.0f;  // turret US side-check: corridor blocked
-static constexpr float REAR_IR_BLOCKED_CM  = 20.0f;  // rear side IR: obstacle in strafe path
+static constexpr float REAR_IR_BLOCKED_CM  = 12.0f;  // rear side IR: obstacle in strafe path
 static constexpr float US_FWD_TRIGGER_CM   = 20.0f;  // forward US scan: obstacle ahead
 
 // ─── Motion timing / odometry ─────────────────────────────────────────────────
 static constexpr unsigned long SIDE_CHECK_SETTLE_MS = 120;   // turret settle before US read
 static constexpr unsigned long STRAFE_TIMEOUT_MS     = 4000;  // safety cap on a strafe
+static constexpr uint8_t       CORRIDOR_BLOCK_TICKS  = 3;     // consecutive blocked reads before abort
+static constexpr unsigned long STRAFE_US_SETTLE_MS   = 200;   // ignore turret US for this long at strafe start
+static constexpr float         SENSOR_JUMP_REJECT_CM = 20.0f; // discard reading if it jumps more than this
 static constexpr unsigned long STRAFE_EXTRA_MS       = 400;   // extra strafe after front clears
-static constexpr unsigned long POST_STRAFE_FWD_MS    = 3000;  // forward drive after strafe
+static constexpr unsigned long POST_STRAFE_FWD_MS    = 1300;  // forward drive after strafe
 static constexpr float         REVERSE_DIST_CM       = 30.0f; // reverse distance (US odometry)
 static constexpr unsigned long REVERSE_TIMEOUT_MS    = 3000;
 
@@ -79,7 +82,7 @@ static float    ptBufSum;
 
 // Top-level FSM
 enum FireSubState {
-    FS_SWEEP, FS_PARTIAL_SWEEP, FS_TURN, FS_APPROACH, FS_DONE
+    FS_SWEEP, FS_PARTIAL_SWEEP, FS_TURRET_SEEK, FS_TURN, FS_APPROACH, FS_DONE
 };
 static FireSubState subState     = FS_SWEEP;
 static bool         sweepInited  = false;
@@ -88,6 +91,21 @@ static bool         targetSet    = false;
 
 static float partialSweepStartDeg = 0.0f;
 static float partialSweepEndDeg   = 90.0f;
+
+// ── Turret-seek (servo sweep to re-acquire flame without rotating body) ──────
+// After avoidance, sweep the SERVO across a 90° arc on the side opposite the
+// strafe, find the brightest PT angle, then rotate the body to face it.
+//   Strafed RIGHT → flame is on our LEFT  → sweep servo 90°..180° (fwd→left)
+//   Strafed LEFT  → flame is on our RIGHT → sweep servo 90°..0°   (fwd→right)
+static constexpr int      TSEEK_STEP_DEG   = 3;     // servo step per sample
+static constexpr uint16_t TSEEK_SETTLE_MS  = 20;    // settle time per servo step
+static int          tseekServoDeg    = TURRET_FWD;
+static int          tseekDir         = +1;          // +1 toward 180 (left), -1 toward 0 (right)
+static int          tseekEndDeg      = TURRET_LEFT;
+static unsigned long tseekStepMs     = 0;
+static int          tseekBestPT      = 1023;        // lowest PT reading (brightest)
+static int          tseekBestServo   = TURRET_FWD;
+static bool         tseekInited      = false;
 
 // Approach FSM
 enum ApproachSubState {
@@ -106,6 +124,9 @@ static bool          strafeRight       = false;  // current / intended strafe di
 static bool          sideCheckFallback = false;  // true once we've flipped to 2nd side
 static unsigned long sideCheckSettleMs = 0;
 static unsigned long strafeStartMs     = 0;
+static uint8_t       corridorBlockCount = 0;       // consecutive blocked ticks
+static float         prevUsSide         = -1.0f;    // last turret US (jump reject)
+static float         prevRearIR         = -1.0f;    // last rear IR  (jump reject)
 static unsigned long strafeExtraMs     = 0;
 static unsigned long postStrafeMs      = 0;
 static unsigned long reverseStartMs    = 0;
@@ -115,6 +136,7 @@ static uint8_t       ptFireCounter     = 0;       // consecutive fire-confirm ti
 // Forward declarations
 static void  doSweep();
 static void  doPartialSweep();
+static void  doTurretSeek();
 static void  doTurn();
 static void  doApproach();
 static float computeHotspotAngle(uint16_t &outMin, uint16_t &outMax, bool &outValid);
@@ -143,6 +165,7 @@ STEP runFireRoutine() {
         switch (subState) {
             case FS_SWEEP:         Serial.println(F("SWEEP"));         break;
             case FS_PARTIAL_SWEEP: Serial.println(F("PARTIAL_SWEEP")); break;
+            case FS_TURRET_SEEK:   Serial.println(F("TURRET_SEEK"));   break;
             case FS_TURN:          Serial.println(F("TURN"));          break;
             case FS_APPROACH:      Serial.println(F("APPROACH"));      break;
             case FS_DONE:          Serial.println(F("DONE"));          break;
@@ -151,6 +174,7 @@ STEP runFireRoutine() {
     switch (subState) {
         case FS_SWEEP:         doSweep();        break;
         case FS_PARTIAL_SWEEP: doPartialSweep(); break;
+        case FS_TURRET_SEEK:   doTurretSeek();   break;
         case FS_TURN:          doTurn();         break;
         case FS_APPROACH:      doApproach();     break;
         case FS_DONE:
@@ -217,6 +241,98 @@ static void doSweep() {
         Serial.print(F("[SWEEP] hotspot=")); Serial.print(target);
         Serial.print(F(" valid="));          Serial.println(valid);
         subState = FS_TURN;
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// doTurretSeek — sweep the SERVO (not the body) across a 90° arc on the side
+// opposite to the strafe, sample the centre PT, and find the brightest angle.
+// Then rotate the body to face it and resume the forward approach.
+//
+// This avoids rotating the whole robot to re-acquire the flame. The servo
+// sweeps fwd(90°)→side(0° or 180°); the body only turns once, by the offset
+// between the brightest servo angle and straight-ahead.
+// ═════════════════════════════════════════════════════════════════════════════
+static void doTurretSeek() {
+    if (!tseekInited) {
+        // Strafed RIGHT → flame on our LEFT  → sweep servo 90°→180°  (dir +1)
+        // Strafed LEFT  → flame on our RIGHT → sweep servo 90°→0°    (dir -1)
+        tseekDir       = strafeRight ? +1 : -1;
+        tseekEndDeg    = strafeRight ? TURRET_LEFT : TURRET_RIGHT;
+        tseekServoDeg  = TURRET_FWD;
+        tseekBestPT    = 1023;
+        tseekBestServo = TURRET_FWD;
+        tseekStepMs    = 0;
+        tseekInited    = true;
+        motors.stop();
+        turret_motor.write(tseekServoDeg);
+        Serial.print(F("[TSEEK] Init — sweeping servo 90→"));
+        Serial.print(tseekEndDeg);
+        Serial.println(strafeRight ? F(" (flame LEFT)") : F(" (flame RIGHT)"));
+        return;
+    }
+
+    // Settle at current servo position before sampling
+    if (tseekStepMs == 0) { tseekStepMs = millis(); return; }
+    if (millis() - tseekStepMs < TSEEK_SETTLE_MS) return;
+
+    int pt = analogRead(PT_CENTRE_PIN);
+    if (pt < tseekBestPT) {
+        tseekBestPT    = pt;
+        tseekBestServo = tseekServoDeg;
+    }
+
+    static unsigned long lastLog = 0;
+    if (millis() - lastLog > 150) {
+        lastLog = millis();
+        Serial.print(F("[TSEEK] servo=")); Serial.print(tseekServoDeg);
+        Serial.print(F(" PT="));           Serial.print(pt);
+        Serial.print(F(" best="));         Serial.print(tseekBestPT);
+        Serial.print(F("@"));              Serial.println(tseekBestServo);
+    }
+
+    // Advance servo
+    tseekServoDeg += tseekDir * TSEEK_STEP_DEG;
+    tseekStepMs = 0;
+    turret_motor.write(tseekServoDeg);
+
+    // Reached end of arc?
+    bool done = (tseekDir > 0) ? (tseekServoDeg >= tseekEndDeg)
+                               : (tseekServoDeg <= tseekEndDeg);
+    if (done) {
+        turret_motor.write(TURRET_FWD);
+        Serial.print(F("[TSEEK] Sweep done — brightest servo="));
+        Serial.print(tseekBestServo);
+        Serial.print(F(" (PT=")); Serial.print(tseekBestPT); Serial.println(F(")"));
+
+        // Convert brightest servo angle → body turn angle.
+        // Servo 90° = straight ahead. Servo > 90° faces LEFT, < 90° faces RIGHT.
+        // Body must rotate by (servoAngle - 90) in the matching direction.
+        //   Gyro heading increases CCW (left). Facing left = +offset.
+        float servoOffset = (float)(tseekBestServo - TURRET_FWD);  // +ve = left
+        float curHeading  = sensors.getGyroHeading();
+        float targetHeading = curHeading + servoOffset;            // CCW positive
+        while (targetHeading >= 360.0f) targetHeading -= 360.0f;
+        while (targetHeading <    0.0f) targetHeading += 360.0f;
+
+        hotspot = Hotspot(targetHeading, tseekBestPT, true);
+        tseekInited = false;
+
+        Serial.print(F("[TSEEK] servoOffset=")); Serial.print(servoOffset);
+        Serial.print(F(" curHdg="));             Serial.print(curHeading);
+        Serial.print(F(" → targetHdg="));        Serial.println(targetHeading);
+
+        // If the flame is basically straight ahead, skip the turn entirely.
+        if (fabsf(servoOffset) < 4.0f) {
+            Serial.println(F("[TSEEK] Flame ~ahead — resuming approach without turn"));
+            approachSub = AP_DRIVE;
+            ptFireCounter = 0;
+            turret_motor.write(TURRET_FWD);
+            motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
+            subState = FS_APPROACH;
+        } else {
+            subState = FS_TURN;   // body turns to face flame, then FS_APPROACH
+        }
     }
 }
 
@@ -403,8 +519,11 @@ static void pointTurret(bool toRight) {
 
 // Begin strafing. Turret should already point to the strafe side.
 static void beginStrafe(bool goRight) {
-    strafeRight   = goRight;
-    strafeStartMs = millis();
+    strafeRight        = goRight;
+    strafeStartMs      = millis();
+    corridorBlockCount = 0;
+    prevUsSide         = -1.0f;
+    prevRearIR         = -1.0f;
     Serial.print(F("[STRAFE] Begin ")); Serial.println(goRight ? F("RIGHT") : F("LEFT"));
     if (goRight) motors.strafeRight();
     else         motors.strafeLeft();
@@ -579,28 +698,57 @@ static void doApproach() {
             float rearIR = strafeRight ? sensors.readIRRearRight()
                                        : sensors.readIRRearLeft();
 
-            bool usBlocked  = (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
-            bool rearBlocked = (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
-            bool timedOut   = (millis() - strafeStartMs >= STRAFE_TIMEOUT_MS);
+            // (a) Ignore turret US for the first STRAFE_US_SETTLE_MS — servo is
+            //     still settling and we're clearing the original obstacle.
+            bool usSettled = (millis() - strafeStartMs >= STRAFE_US_SETTLE_MS);
+
+            // (b) Jump-reject: discard a reading that leapt more than
+            //     SENSOR_JUMP_REJECT_CM from the previous valid one (noise spike).
+            bool usValid   = true;
+            bool rearValid = true;
+            if (prevUsSide > 0.5f && usSide > 0.5f &&
+                fabsf(usSide - prevUsSide) > SENSOR_JUMP_REJECT_CM) usValid = false;
+            if (prevRearIR > 0.5f && rearIR > 0.5f &&
+                fabsf(rearIR - prevRearIR) > SENSOR_JUMP_REJECT_CM) rearValid = false;
+
+            bool usBlocked   = usSettled && usValid &&
+                               (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
+            bool rearBlocked = rearValid &&
+                               (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
+
+            // Update previous-valid readings (only store readings we trusted)
+            if (usValid)   prevUsSide = usSide;
+            if (rearValid) prevRearIR = rearIR;
+
+            bool timedOut = (millis() - strafeStartMs >= STRAFE_TIMEOUT_MS);
 
             static unsigned long lastStr = 0;
             if (millis() - lastStr > 200) {
                 lastStr = millis();
                 Serial.print(F("[STRAFE] usSide=")); Serial.print(usSide, 1);
                 Serial.print(F(" rearIR="));         Serial.print(rearIR, 1);
+                Serial.print(F(" blkCnt="));         Serial.print(corridorBlockCount);
                 Serial.print(F(" frontClear="));     Serial.println(frontIsClear());
             }
 
-            // New obstacle appeared in the strafe corridor — back to drive/reassess
+            // (c) Debounce: require CORRIDOR_BLOCK_TICKS consecutive blocked
+            //     reads before aborting, so a single glitch is ignored.
             if (usBlocked || rearBlocked) {
-                motors.stop();
-                Serial.print(F("[STRAFE] Corridor blocked (US="));
-                Serial.print(usSide, 1); Serial.print(F(" rear="));
-                Serial.print(rearIR, 1); Serial.println(F(") → reassess"));
-                turret_motor.write(TURRET_FWD);
-                motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
-                approachSub = AP_DRIVE;
-                break;
+                corridorBlockCount++;
+                if (corridorBlockCount >= CORRIDOR_BLOCK_TICKS) {
+                    motors.stop();
+                    Serial.print(F("[STRAFE] Corridor blocked x"));
+                    Serial.print(corridorBlockCount);
+                    Serial.print(F(" (US=")); Serial.print(usSide, 1);
+                    Serial.print(F(" rear=")); Serial.print(rearIR, 1);
+                    Serial.println(F(") → reassess"));
+                    turret_motor.write(TURRET_FWD);
+                    motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
+                    approachSub = AP_DRIVE;
+                    break;
+                }
+            } else {
+                corridorBlockCount = 0;   // reset on any clear read
             }
 
             // Obstacle cleared from front → strafe a little extra then move on
@@ -624,19 +772,37 @@ static void doApproach() {
 
         // ── AP_STRAFE_EXTRA: keep strafing a bit to fully pass the obstacle ──
         case AP_STRAFE_EXTRA: {
-            // Still watch the corridor during the extra strafe
+            // Still watch the corridor during the extra strafe (same debounce
+            // and jump-reject as AP_STRAFING).
             float usSide = sensors.pingNowCm();
             float rearIR = strafeRight ? sensors.readIRRearRight()
                                        : sensors.readIRRearLeft();
-            bool corridorBlocked = (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM) ||
-                                   (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
-            if (corridorBlocked) {
-                motors.stop();
-                Serial.println(F("[EXTRA] Corridor blocked → reassess"));
-                turret_motor.write(TURRET_FWD);
-                motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
-                approachSub = AP_DRIVE;
-                break;
+
+            bool usValid = true, rearValid = true;
+            if (prevUsSide > 0.5f && usSide > 0.5f &&
+                fabsf(usSide - prevUsSide) > SENSOR_JUMP_REJECT_CM) usValid = false;
+            if (prevRearIR > 0.5f && rearIR > 0.5f &&
+                fabsf(rearIR - prevRearIR) > SENSOR_JUMP_REJECT_CM) rearValid = false;
+
+            bool usBlocked   = usValid &&
+                               (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
+            bool rearBlocked = rearValid &&
+                               (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
+            if (usValid)   prevUsSide = usSide;
+            if (rearValid) prevRearIR = rearIR;
+
+            if (usBlocked || rearBlocked) {
+                corridorBlockCount++;
+                if (corridorBlockCount >= CORRIDOR_BLOCK_TICKS) {
+                    motors.stop();
+                    Serial.println(F("[EXTRA] Corridor blocked → reassess"));
+                    turret_motor.write(TURRET_FWD);
+                    motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
+                    approachSub = AP_DRIVE;
+                    break;
+                }
+            } else {
+                corridorBlockCount = 0;
             }
 
             if (millis() - strafeExtraMs >= STRAFE_EXTRA_MS) {
@@ -671,15 +837,10 @@ static void doApproach() {
 
             if (millis() - postStrafeMs >= POST_STRAFE_FWD_MS) {
                 motors.stop();
-                Serial.println(F("[POST] Forward done → partial sweep"));
-                // Strafed right → flame LEFT  → arc [0,90]
-                // Strafed left  → flame RIGHT → arc [270,358]
-                partialSweepStartDeg = strafeRight ?   0.0f : 270.0f;
-                partialSweepEndDeg   = strafeRight ?  90.0f : 358.0f;
-                Serial.print(F("[POST] Arc ")); Serial.print(partialSweepStartDeg);
-                Serial.print(F("→")); Serial.println(partialSweepEndDeg);
+                Serial.println(F("[POST] Forward done → turret seek"));
                 approachSub = AP_DRIVE;
-                subState    = FS_PARTIAL_SWEEP;
+                tseekInited = false;
+                subState    = FS_TURRET_SEEK;
             }
             break;
         }
