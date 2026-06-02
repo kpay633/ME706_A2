@@ -44,8 +44,8 @@ static constexpr float   SIDE_IR_EFFECT_CM           = 10.0f;
 static constexpr int     MOTION_BASE_SPEED          = 200;
 static constexpr int     MOTION_MIN_SPEED            = 120;
 static constexpr int     MOTION_MAX_SPEED            = 240;
-static constexpr float   FRONT_IR_GAIN               = 10.0f;
-static constexpr float   SIDE_IR_GAIN                = 14.0f;
+static constexpr float   FRONT_IR_GAIN               = 0.5f;
+static constexpr float   SIDE_IR_GAIN                = 1.0f;
 static constexpr unsigned long FAN_DURATION_MS       = 1800;
 static constexpr unsigned long RECENT_VISIBLE_MS     = 700;
 
