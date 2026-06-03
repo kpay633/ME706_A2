@@ -22,3 +22,4 @@ ObstacleClearanceResult checkForwardClearance();
 // clearanceScanStep(out) every loop tick until it returns true.
 void clearanceScanStart();
 bool clearanceScanStep(ObstacleClearanceResult &out);
+void DisplayAllSensors();

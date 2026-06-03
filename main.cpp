@@ -42,6 +42,7 @@ void setup(void) {
     turret_motor.write(90);
     pinMode(LED_BUILTIN, OUTPUT);
     main_previous_millis = 0;
+    pinMode(9, OUTPUT);
 
     Serial.begin(9600);
     Serial.println(F("USB Serial active - monitoring only"));
@@ -98,12 +99,13 @@ STEP initialising() {
 
 STEP idle() {
     static unsigned long previous_millis;
-    Serial.println(F("IDLE"));
+    // Serial.println(F("IDLE"));
 
 #ifndef NO_BATTERY_V_OK
     if (!sensors.isBatteryVoltageOK()) return STEP::ERROR;
 #endif
 
+    DisplayAllSensors();
     if (millis() - previous_millis > 200) {
         previous_millis = millis();
         // Uncomment for diagnostics:

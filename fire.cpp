@@ -11,14 +11,14 @@ extern Servo   turret_motor;
 // ═════════════════════════════════════════════════════════════════════════════
 // PINS & CONSTANTS
 // ═════════════════════════════════════════════════════════════════════════════
-#define PT_LEFT_PIN    A2
+#define PT_LEFT_PIN    A4
 #define PT_CENTRE_PIN  A3
-#define PT_RIGHT_PIN   A4
+#define PT_RIGHT_PIN   A2
 
 // ─── Fire detection ───────────────────────────────────────────────────────────
-#define PT_FIRE_THRESH        35
-#define PT_FIRE_CONFIRM_TICKS  5     // consecutive ticks below threshold to confirm
-#define PT_OBSTACLE_SUPPRESS  120    // PT below this = close to flame, ignore fwd obstacles
+#define PT_FIRE_THRESH        25
+#define PT_FIRE_CONFIRM_TICKS  3     // consecutive ticks below threshold to confirm
+#define PT_OBSTACLE_SUPPRESS  35    // PT below this = close to flame, ignore fwd obstacles
                                      // (flame base reads as an obstacle near the end)
 #define PT_CLOSE_CONFIRM_TICKS 3     // consecutive PT<suppress ticks to trigger final lock-on
 
@@ -48,21 +48,22 @@ static constexpr uint16_t SERVO_SETTLE_MS      = 13;
 static constexpr float    DEG2RAD              = 3.14159265f / 180.0f;
 
 // ─── Obstacle thresholds (cm) ─────────────────────────────────────────────────
-static constexpr float FRONT_IR_TRIGGER_L_CM = 13.0f;  // front-LEFT  IR: obstacle ahead
-static constexpr float FRONT_IR_TRIGGER_R_CM = 17.0f;  // front-RIGHT IR: obstacle ahead
-static constexpr float FRONT_IR_CLEAR_L_CM   = 16.0f;  // front-LEFT  IR: clear (hysteresis)
-static constexpr float FRONT_IR_CLEAR_R_CM   = 23.0f;  // front-RIGHT IR: clear (hysteresis)
-static constexpr float SIDE_US_BLOCKED_CM  = 20.0f;  // turret US side-check: corridor blocked
-static constexpr float REAR_IR_BLOCKED_CM  = 12.0f;  // rear side IR: obstacle in strafe path
-static constexpr float US_FWD_TRIGGER_CM   = 15.0f;  // forward US: obstacle straight ahead
+static constexpr float FRONT_IR_TRIGGER_L_CM = 28.0f;  // front-LEFT  IR: obstacle ahead
+static constexpr float FRONT_IR_TRIGGER_R_CM = FRONT_IR_TRIGGER_L_CM-5;  // front-RIGHT IR: obstacle ahead
+static constexpr float FRONT_IR_CLEAR_L_CM   = 32.0f;  // front-LEFT  IR: clear (hysteresis)
+static constexpr float FRONT_IR_CLEAR_R_CM   = FRONT_IR_CLEAR_L_CM-3;  // front-RIGHT IR: clear (hysteresis)
+static constexpr float SIDE_US_BLOCKED_CM  = 10.0f;  // turret US side-check: corridor blocked
+static constexpr float REAR_IR_BLOCKED_CM  = SIDE_US_BLOCKED_CM-2.0;  // rear side IR: obstacle in strafe path
+static constexpr float US_FWD_TRIGGER_CM   = FRONT_IR_TRIGGER_R_CM-8;  // forward US: obstacle straight ahead
 
 // ─── Motion timing / odometry ─────────────────────────────────────────────────
-static constexpr unsigned long SIDE_CHECK_SETTLE_MS = 120;
+static constexpr unsigned long SIDE_CHECK_SETTLE_MS = 400;  // time for the 90° servo sweep to finish + settle
+static constexpr uint8_t       SIDE_CHECK_PINGS     = 5;    // US samples to confirm the side reading (median)
 static constexpr unsigned long STRAFE_TIMEOUT_MS     = 4000;
 static constexpr uint8_t       CORRIDOR_BLOCK_TICKS  = 3;
-static constexpr unsigned long STRAFE_US_SETTLE_MS   = 200;
+static constexpr unsigned long STRAFE_US_SETTLE_MS   = 250;
 static constexpr float         SENSOR_JUMP_REJECT_CM = 20.0f;
-static constexpr unsigned long STRAFE_EXTRA_MS       = 50;
+static constexpr unsigned long STRAFE_EXTRA_MS       = 300;
 static constexpr unsigned long US_ONLY_STRAFE_MS     = 600;   // min strafe time when only US detected (no front IR to clear against)
 static constexpr unsigned long FLIP_STRAFE_EXTRA_MS  = 1000;  // extra clearance beyond returning to start, when strafe flips sides
 static constexpr unsigned long POST_STRAFE_FWD_MS    = 1300;
@@ -76,7 +77,7 @@ static constexpr float    NOGAP_REVERSE_CM    = 30.0f;  // reverse distance if n
 static constexpr unsigned long NOGAP_STRAFE_MS = 2500;  // long strafe after the no-gap reverse
 
 // ─── Inter-state settle (pause + confirm clear before driving forward) ───────
-static constexpr unsigned long SETTLE_PAUSE_MS    = 250;  // motor-stop pause before confirming
+static constexpr unsigned long SETTLE_PAUSE_MS    = 150;  // motor-stop pause before confirming
 static constexpr uint8_t       SETTLE_CLEAR_TICKS = 3;    // consecutive all-clear ticks required
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -106,8 +107,9 @@ static bool         sweepStarted = false;
 static bool         targetSet    = false;
 
 // ── Turret-seek (servo sweep to re-acquire flame without rotating body) ──────
-static constexpr int      TSEEK_STEP_DEG   = 3;
-static constexpr uint16_t TSEEK_SETTLE_MS  = 40;
+static constexpr int      TSEEK_STEP_DEG   = 2;
+static constexpr uint16_t TSEEK_SETTLE_MS  = 30;
+static constexpr float    TSEEK_GAIN       = 0.7f;  // scale servo offset -> body turn (1.0 = exact, <1 = undershoot to kill overshoot)
 static int          tseekServoDeg    = TURRET_FWD;
 static int          tseekDir         = +1;
 static int          tseekEndDeg      = TURRET_LEFT;
@@ -117,10 +119,10 @@ static int          tseekBestServo   = TURRET_FWD;
 static bool         tseekInited      = false;
 static bool         tseekFullSweep   = false;   // true = sweep both sides (final lock-on)
 static bool         finalLockon      = false;   // true once we've done the close-range re-aim
-
 // Approach FSM
 enum ApproachSubState {
     AP_DRIVE,          // driving at flame; front IR + forward US + fire-reached
+    AP_BLOW_OUT,
     AP_SIDE_CHECK,     // turret pointed to candidate strafe side, taking US reading
     AP_STRAFING,       // strafing; front sensors (clear?) + rear IR + turret US
     AP_STRAFE_EXTRA,   // front cleared — strafe a little more to fully pass obstacle
@@ -148,6 +150,7 @@ static unsigned long strafeExtraMs      = 0;
 static unsigned long postStrafeMs       = 0;
 static uint8_t       ptFireCounter      = 0;
 static uint8_t       ptCloseCounter     = 0;   // consecutive ticks PT below suppress (close zone)
+static int          firesExtinguished = 0;
 
 // Both-sides-blocked recovery working vars
 static float         detectHeading       = 0.0f;   // heading when obstacle detected
@@ -228,6 +231,18 @@ static void doSweep() {
             ptBuf[i] = v; ptBufSum += v; delay(5);
         }
         sweepStarted = false; sweepInited = true;
+
+        // Drain IMU reports that buffered up while the gyro wasn't polled (e.g.
+        // during the blocking blow-out reverse). Without this the first headings
+        // lag reality: the sweep sees ~0° of motion, "completes" on the first
+        // noise blip, and the following turn chases a stale heading and
+        // oscillates. The robot is still here, so poll back-to-back until the
+        // reports catch up to real time before zeroing.
+        {
+            unsigned long t0 = millis();
+            while (millis() - t0 < 350) sensors.getGyroHeading();
+        }
+
         sensors.ZeroGyroHeading();
         motors.rotateCounterClockwise();
         return;
@@ -313,10 +328,10 @@ static void doTurretSeek() {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 150) {
         lastLog = millis();
-        Serial.print(F("[TSEEK] servo=")); Serial.print(tseekServoDeg);
-        Serial.print(F(" PT="));           Serial.print(pt);
-        Serial.print(F(" best="));         Serial.print(tseekBestPT);
-        Serial.print(F("@"));              Serial.println(tseekBestServo);
+        // Serial.print(F("[TSEEK] servo=")); Serial.print(tseekServoDeg);
+        // Serial.print(F(" PT="));           Serial.print(pt);
+        // Serial.print(F(" best="));         Serial.print(tseekBestPT);
+        // Serial.print(F("@"));              Serial.println(tseekBestServo);
     }
 
     tseekServoDeg += tseekDir * TSEEK_STEP_DEG;
@@ -327,13 +342,13 @@ static void doTurretSeek() {
                                : (tseekServoDeg <= tseekEndDeg);
     if (done) {
         turret_motor.write(TURRET_FWD);
-        Serial.print(F("[TSEEK] done — brightest servo="));
-        Serial.print(tseekBestServo);
-        Serial.print(F(" PT=")); Serial.println(tseekBestPT);
+        // Serial.print(F("[TSEEK] done — brightest servo="));
+        // Serial.print(tseekBestServo);
+        // Serial.print(F(" PT=")); Serial.println(tseekBestPT);
 
         float servoOffset = (float)(tseekBestServo - TURRET_FWD);   // +ve = left
         float curHeading  = sensors.getGyroHeading();
-        float targetHeading = curHeading + servoOffset;             // CCW positive
+        float targetHeading = curHeading + servoOffset * TSEEK_GAIN;  // CCW positive
         while (targetHeading >= 360.0f) targetHeading -= 360.0f;
         while (targetHeading <    0.0f) targetHeading += 360.0f;
 
@@ -480,6 +495,27 @@ static int ptBrightest() {
     return m;
 }
 
+// Take SIDE_CHECK_PINGS ultrasonic samples and return their median, so a
+// single noisy ping can't decide the side-check. The turret must already be
+// pointed at the side and settled before calling this.
+static float confirmedSidePingCm() {
+    float s[SIDE_CHECK_PINGS];
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < SIDE_CHECK_PINGS; i++) {
+        float v = sensors.pingNowCm();
+        if (v > 0.5f) s[n++] = v;   // keep only valid (in-range) pings
+        delay(12);                  // small gap between pings
+    }
+    if (n == 0) return 0.0f;        // nothing valid → treat as "no echo" (clear)
+    // insertion sort
+    for (uint8_t i = 1; i < n; i++) {
+        float key = s[i]; int8_t j = i - 1;
+        while (j >= 0 && s[j] > key) { s[j+1] = s[j]; j--; }
+        s[j+1] = key;
+    }
+    return s[n / 2];                // median
+}
+
 static void pointTurret(bool toRight) {
     int angle = toRight ? TURRET_RIGHT : TURRET_LEFT;
     turret_motor.write(angle);
@@ -487,7 +523,7 @@ static void pointTurret(bool toRight) {
     Serial.print(F(" (")); Serial.print(angle); Serial.println(F("°)"));
 }
 
-static void beginStrafe(bool goRight, unsigned long minMs = 0) {
+static void beginStrafe(bool goRight, unsigned long minMs) {
     strafeRight        = goRight;
     strafeStartMs      = millis();
     strafeMinMs        = minMs;        // don't exit on front-clear before this elapses
@@ -535,17 +571,19 @@ static void handleCorridorBlock() {
 // doApproach — drive at flame with layered obstacle avoidance.
 // ═════════════════════════════════════════════════════════════════════════════
 static void doApproach() {
-    float heading = sensors.getGyroHeading();
+    int PTleft = analogRead(PT_LEFT_PIN);
+    int PTmiddle = analogRead(PT_CENTRE_PIN);
+    int PTright = analogRead(PT_RIGHT_PIN);
 
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 200) {
-        lastLog = millis();
-        Serial.print(F("[AP] sub=")); Serial.print((int)approachSub);
-        Serial.print(F(" FL="));      Serial.print(sensors.readIRFrontLeft(),  1);
-        Serial.print(F(" FR="));      Serial.print(sensors.readIRFrontRight(), 1);
-        Serial.print(F(" RL="));      Serial.print(sensors.readIRRearLeft(),   1);
-        Serial.print(F(" RR="));      Serial.print(sensors.readIRRearRight(),  1);
-        Serial.print(F(" PT="));      Serial.println(analogRead(PT_CENTRE_PIN));
+    //     lastLog = millis();
+    //     Serial.print(F("[AP] sub=")); Serial.print((int)approachSub);
+    //     Serial.print(F(" FL="));      Serial.print(sensors.readIRFrontLeft(),  1);
+    //     Serial.print(F(" FR="));      Serial.print(sensors.readIRFrontRight(), 1);
+    //     Serial.print(F(" RL="));      Serial.print(sensors.readIRRearLeft(),   1);
+    //     Serial.print(F(" RR="));      Serial.print(sensors.readIRRearRight(),  1);
+        // Serial.print(F(" PT="));      Serial.println(analogRead(PT_CENTRE_PIN));
     }
 
     switch (approachSub) {
@@ -553,15 +591,13 @@ static void doApproach() {
         // ── AP_DRIVE: turret forward, front IR + forward US watched ──────────
         case AP_DRIVE: {
             int pt = ptBrightest();   // fire-reached uses brightest of all 3 PTs
+            // Serial.print("Brightest = ");
+            Serial.println(pt);
             if (pt < PT_FIRE_THRESH) {
                 ptFireCounter++;
                 if (ptFireCounter >= PT_FIRE_CONFIRM_TICKS) {
-                    motors.stop();
-                    turret_motor.write(TURRET_FWD);
-                    Serial.print(F("[AP_DRIVE] Fire confirmed (PT="));
-                    Serial.print(pt); Serial.println(F(") → DONE"));
-                    subState = FS_DONE;
-                    break;
+                    approachSub = AP_BLOW_OUT;
+                    return;
                 }
             } else {
                 ptFireCounter = 0;
@@ -574,18 +610,21 @@ static void doApproach() {
             else                           ptCloseCounter = 0;
 
             if (!finalLockon && ptCloseCounter >= PT_CLOSE_CONFIRM_TICKS) {
-                motors.stop();
-                Serial.print(F("[AP_DRIVE] Close zone (PT="));
-                Serial.print(pt); Serial.println(F(") → FINAL servo lock-on"));
-                tseekFullSweep = true;
-                tseekInited    = false;
-                subState       = FS_TURRET_SEEK;
+                // motors.stop();
+                // Serial.print(F("[AP_DRIVE] Close zone (PT="));
+                // Serial.print(pt); Serial.println(F(") → FINAL servo lock-on"));
+                // tseekFullSweep = true;
+                // tseekInited    = false;
+                // subState       = FS_TURRET_SEEK;
+                finalLockon = true;
                 break;
             }
 
-            if (!motors.driveStraight(heading, 0.0f, 0.0f)) {
-                motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
-            }
+            // if (!motors.driveStraight(heading, 0.0f, 0.0f)) {
+            //     motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
+            // }
+            motors.DriveToLight(PTleft, PTmiddle, PTright);
+            digitalWrite(9, LOW);
 
             float fl = sensors.readIRFrontLeft();
             float fr = sensors.readIRFrontRight();
@@ -635,16 +674,62 @@ static void doApproach() {
             }
             break;
         }
+        case AP_BLOW_OUT: {
+            motors.stop();
+            turret_motor.write(TURRET_FWD);
+            digitalWrite(9, HIGH);             // fan on
+            Serial.println(F("[BLOW_OUT] Blowing fire out"));
+
+            if (ptBrightest() > 500){          // flame gone (dim = high ADC)
+                digitalWrite(9, LOW);          // fan off
+                firesExtinguished++;
+                Serial.print(F("[BLOW_OUT] Fire out (#"));
+                Serial.print(firesExtinguished);
+                Serial.println(F(") -> back off + sweep for next"));
+
+                // Back away from the (now-out) fire. The stand is a thin pole:
+                // the forward US tends to miss it (echo reads past to the wall),
+                // and the front long-range IRs fold back to "far" while we're
+                // inside their ~20cm dead zone. So:
+                //   1) reverse a fixed minimum to clear the pole + escape the
+                //      IR dead zone (REV_MIN_MS — tune this if it backs off too
+                //      little / too much),
+                //   2) then keep reversing until the front IR (now in valid
+                //      range) confirms clear, so the resumed approach won't
+                //      instantly re-trigger on the stand.
+                // Capped by REVERSE_TIMEOUT_MS so we don't back into anything.
+                const unsigned long REV_MIN_MS = 700;
+                motors.driveReverse();
+                unsigned long revStart = millis();
+                while (millis() - revStart < REVERSE_TIMEOUT_MS) {
+                    if (millis() - revStart >= REV_MIN_MS && frontIsClear()) break;
+                    delay(20);
+                }
+                motors.stop();
+
+                // Go find the next fire with a clean full-360 sweep — identical
+                // to start-up. resetFireRoutine() clears all sweep/approach
+                // state (sweepInited, sweepStarted, targetSet, finalLockon, fire
+                // counters, turret->forward) so doSweep re-inits from scratch
+                // rather than resuming with stale flags. firesExtinguished is
+                // preserved (resetFireRoutine doesn't touch it).
+                resetFireRoutine();
+            }
+            break;
+        }
 
         // ── AP_SIDE_CHECK: turret at candidate side, one US reading ──────────
         case AP_SIDE_CHECK: {
+            // Wait for the servo to finish its ±90° sweep and settle first.
             if (millis() - sideCheckSettleMs < SIDE_CHECK_SETTLE_MS) break;
 
-            float usSide = sensors.pingNowCm();
+            // Confirm the corridor with a median of several pings, so one
+            // noisy reading can't wrongly commit (or block) the strafe.
+            float usSide = confirmedSidePingCm();
             bool blocked = (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
 
             Serial.print(F("[SIDE_CHECK] ")); Serial.print(strafeRight ? F("RIGHT") : F("LEFT"));
-            Serial.print(F(" US=")); Serial.print(usSide, 1);
+            Serial.print(F(" US(med)=")); Serial.print(usSide, 1);
             Serial.println(blocked ? F(" BLOCKED") : F(" CLEAR"));
 
             if (!blocked) {
@@ -989,34 +1074,6 @@ static void doApproach() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Blocking clearance scan (utility — not used by doApproach)
-// ═════════════════════════════════════════════════════════════════════════════
-ObstacleClearanceResult checkForwardClearance() {
-    ObstacleClearanceResult result;
-    result.isClear = true; result.closestObstacleOffsetMm = 0.0f;
-    result.closestObstacleDistanceMm = -1.0f;
-    float closestMm = 1.0e9f;
-    for (int deg = SCAN_START_DEG; deg <= SCAN_END_DEG; deg += SCAN_STEP_DEG) {
-        turret_motor.write(deg); delay(SERVO_SETTLE_MS);
-        float cm = sensors.pingNowCm();
-        if (cm <= 0.0f) continue;
-        float mm  = cm * 10.0f;
-        float brg = ((float)deg - 90.0f) * DEG2RAD;
-        float fwd = SENSOR_OFFSET_MM + mm * cosf(brg);
-        float lat = mm * sinf(brg);
-        if (fwd >= 0.0f && fwd <= CLEARANCE_DEPTH_MM &&
-            fabsf(lat) <= CLEARANCE_HALF_W_MM && mm < closestMm) {
-            closestMm = mm;
-            result.isClear = false;
-            result.closestObstacleOffsetMm   = lat;
-            result.closestObstacleDistanceMm = mm;
-        }
-    }
-    turret_motor.write(TURRET_FWD); delay(SERVO_SETTLE_MS);
-    return result;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // Non-blocking clearance scanner (centre arc 50–130°) — kept for compatibility
 // ═════════════════════════════════════════════════════════════════════════════
 static int           nb_scanAngleDeg    = SCAN_START_DEG;
@@ -1073,4 +1130,27 @@ bool clearanceScanStep(ObstacleClearanceResult &out) {
         return true;
     }
     return false;
+}
+
+void DisplayAllSensors() {
+    static unsigned long lastPrintTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Only print every 300ms to keep the Serial Monitor readable and responsive
+    if (currentTime - lastPrintTime >= 200) {
+        lastPrintTime = currentTime;
+        turret_motor.write(TURRET_LEFT);
+        
+        // 2. Infrared Distance Sensors
+        Serial.print(F("US: ")); Serial.print(sensors.pingNowCm(), 1);
+        Serial.print(F("  FL: ")); Serial.print(sensors.readIRFrontLeft(), 1);
+        Serial.print(F("  FR: ")); Serial.print(sensors.readIRFrontRight(), 1);
+        Serial.print(F("  RL: ")); Serial.print(sensors.readIRRearLeft(), 1);
+        Serial.print(F("  RR: ")); Serial.print(sensors.readIRRearRight(), 1);
+
+        // 3. Phototransistors (lower ADC = brighter)
+        Serial.print(F("  PT-L: ")); Serial.print(analogRead(PT_LEFT_PIN));
+        Serial.print(F("  PT-C: ")); Serial.print(analogRead(PT_CENTRE_PIN));
+        Serial.print(F("  PT-R: ")); Serial.println(analogRead(PT_RIGHT_PIN));
+    }
 }
