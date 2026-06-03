@@ -33,6 +33,7 @@ class Motor {
 	bool strafeToUSDist(float targetDist, float usDist, float gyroAngle, float irDist);
 	void stop();
 	void PrintDetails();
+	bool DriveToLight(int PTleft, int PTmiddle, int PTright);
 
  private:
 	void log(const char *message) const;
@@ -95,4 +96,7 @@ class Motor {
 	float strafeIRKp;
 	float irCorrection;
 
+	float PTdiff;
+	float PTcorrection;
+	float K_pt;
 };

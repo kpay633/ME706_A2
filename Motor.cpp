@@ -1,7 +1,12 @@
 #include "Motor.h"
 
-#define MotorOffset 60
-#define TurnTolerance 0.5 //deg
+#define MotorOffset 70
+#define TurnTolerance 2 //deg
+
+// ── DriveToLight tuning ────────────────────────────────────────────────────────
+#define PT_NEAR     900.0f   // avgPT reading at the flame — tune to your sensor
+#define PT_DEADBAND 6.0f     // % imbalance ignored when essentially centred
+#define PT_ALPHA    0.3f     // correction low-pass; lower = smoother (try 0.2)
 
 Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, uint8_t rightFrontPin)
 	: _leftFrontPin(leftFrontPin),
@@ -25,7 +30,8 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  turnTargetSet(false),
 	  turn_kp_large(6),
 	  _driveStraightAtDistKp(120), 
-	  strafeIRKp(5) {}
+	  strafeIRKp(5),
+	  K_pt(1) {}
 
 void Motor::initialise(HardwareSerial *serialCom) {
 	if (serialCom) _serial = serialCom;
@@ -266,6 +272,47 @@ bool Motor::driveStraight(float gyro_angle, float usDist, float irDist) {
 	return true;
 }
 
+bool Motor::DriveToLight(int PTleft, int PTmiddle, int PTright){
+	float avgPT = (PTleft + PTmiddle + PTright) / 3.0f;
+	if (avgPT < 1.0f) avgPT = 1.0f;                 // guard divide-by-zero
+
+	float PTLeftPerc   = (PTleft   - avgPT) / avgPT * 100.0f;
+	float PTRightPerc  = (PTright  - avgPT) / avgPT * 100.0f;
+	float PTMiddlePerc = (PTmiddle - avgPT) / avgPT * 100.0f;
+
+	// +ve diff = fire is to the left
+	PTdiff = PTRightPerc - PTLeftPerc;
+
+	Serial.print("Left PT = ");
+	Serial.print(PTLeftPerc);
+	Serial.print(" Centre PT = ");
+	Serial.print(PTMiddlePerc);
+	Serial.print(" Right PT = ");
+	Serial.print(PTRightPerc);
+	Serial.print(" avgPT = ");
+	Serial.println(avgPT);
+
+	// Deadband: don't chase noise when essentially centred
+	if (fabsf(PTdiff) < PT_DEADBAND) PTdiff = 0;
+
+	// Gain schedule: avgPT rises as we approach, so taper the gain so the same
+	// heading error doesn't produce a bigger kick up close.
+	float gainScale = constrain(PT_NEAR / avgPT, 0.25f, 1.0f);
+
+	float rawCorr = PTdiff * K_pt * gainScale;
+
+	// One-pole low-pass to remove the jerk (alpha 0..1, lower = smoother)
+	PTcorrection = PTcorrection + PT_ALPHA * (rawCorr - PTcorrection);
+
+	leftFrontCommand  = constrain(1500 + _speed - PTcorrection, 1300, 1700);
+	leftRearCommand   = constrain(1500 + _speed - PTcorrection, 1300, 1700);
+	rightRearCommand  = constrain(1500 - _speed - PTcorrection, 1300, 1700);
+	rightFrontCommand = constrain(1500 - _speed - PTcorrection, 1300, 1700);
+
+	writeAll(leftFrontCommand, leftRearCommand, rightRearCommand, rightFrontCommand);
+	return true;
+}
+
 
 bool Motor::strafeToUSDist(float targetDist, float usDist, float gyroAngle, float irDist) {
 	float distError = targetDist - usDist;
@@ -341,4 +388,3 @@ void Motor::log(const char *message) const {
 		_serial->println(message);
 	}
 }
-
