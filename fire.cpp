@@ -1075,16 +1075,54 @@ static void doApproach() {
             if (distReached || timedOut) {
                 motors.stop();
                 Serial.println(F("[NOGAP_REV] Done → long strafe LEFT"));
-                strafeRight   = false;
-                nogapStrafeMs = millis();
+                strafeRight        = false;
+                pointTurret(false);          // US watches the LEFT strafe path
+                prevUsSide         = -1.0f;  // reset jump-reject history
+                prevRearIR         = -1.0f;
+                corridorBlockCount = 0;
+                nogapStrafeMs      = millis();
                 motors.strafeLeft();
                 approachSub = AP_NOGAP_STRAFE;
-            }
+            }   
             break;
         }
 
         // ── AP_NOGAP_STRAFE: long strafe, then re-find flame ─────────────────
         case AP_NOGAP_STRAFE: {
+            float usSide = sensors.pingNowCm();
+            float rearIR = sensors.readIRRearLeft();   // strafing left
+
+            bool usSettled = (millis() - nogapStrafeMs >= STRAFE_US_SETTLE_MS);
+
+            bool usValid = true, rearValid = true;
+            if (prevUsSide > 0.5f && usSide > 0.5f &&
+                fabsf(usSide - prevUsSide) > SENSOR_JUMP_REJECT_CM) usValid = false;
+            if (prevRearIR > 0.5f && rearIR > 0.5f &&
+                fabsf(rearIR - prevRearIR) > SENSOR_JUMP_REJECT_CM) rearValid = false;
+
+            bool usBlocked   = usSettled && usValid &&
+                            (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
+            bool rearBlocked = rearValid &&
+                            (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
+            if (usValid)   prevUsSide = usSide;
+            if (rearValid) prevRearIR = rearIR;
+
+            if (usBlocked || rearBlocked) {
+                corridorBlockCount++;
+                if (corridorBlockCount >= CORRIDOR_BLOCK_TICKS) {
+                    motors.stop();
+                    Serial.println(F("[NOGAP_STRAFE] Blocked → spin to find gap"));
+                    turret_motor.write(TURRET_FWD);
+                    detectHeading = sensors.getGyroHeading();
+                    gapClearCount = 0;
+                    motors.rotateClockwise();
+                    approachSub = AP_SPIN_GAP;
+                    break;
+                }
+            } else {
+                corridorBlockCount = 0;
+            }
+
             if (millis() - nogapStrafeMs >= NOGAP_STRAFE_MS) {
                 motors.stop();
                 Serial.println(F("[NOGAP_STRAFE] Done → turret-seek"));

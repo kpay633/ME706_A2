@@ -8,7 +8,7 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  _leftRearPin(leftRearPin),
 	  _rightRearPin(rightRearPin),
 	  _rightFrontPin(rightFrontPin),
-	  _speed(200),
+	  _speed(300),
 	  _driveStraightTargetAng(0.0f),
 	  _driveStraightTargetSideDist(0.0f),
 	  _driveStraightTargetEndDist(0.0f),
@@ -318,10 +318,10 @@ bool Motor::DriveToLight(int PTleft, int PTmiddle, int PTright){
 	// 	rightRearCommand  = constrain(1500 - turnVal, 1300, 1700);
 	// 	rightFrontCommand = constrain(1500 - turnVal, 1300, 1700);
 	// } else {
-		leftFrontCommand  = constrain(1500 + _speed - PTcorrection, 1300, 1700);
-		leftRearCommand   = constrain(1500 + _speed - PTcorrection, 1300, 1700);
-		rightRearCommand  = constrain(1500 - _speed - PTcorrection, 1300, 1700);
-		rightFrontCommand = constrain(1500 - _speed - PTcorrection, 1300, 1700);
+		leftFrontCommand  = constrain(1500 + _speed - PTcorrection, 1200, 1800);
+		leftRearCommand   = constrain(1500 + _speed - PTcorrection, 1200, 1800);
+		rightRearCommand  = constrain(1500 - _speed - PTcorrection, 1200, 1800);
+		rightFrontCommand = constrain(1500 - _speed - PTcorrection, 1200, 1800);
 	// }
 
 	writeAll(leftFrontCommand, leftRearCommand, rightRearCommand, rightFrontCommand);
