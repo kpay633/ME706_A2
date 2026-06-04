@@ -8,7 +8,7 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  _leftRearPin(leftRearPin),
 	  _rightRearPin(rightRearPin),
 	  _rightFrontPin(rightFrontPin),
-	  _speed(200),
+	  _speed(300),
 	  _driveStraightTargetAng(0.0f),
 	  _driveStraightTargetSideDist(0.0f),
 	  _driveStraightTargetEndDist(0.0f),
@@ -26,7 +26,7 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  turn_kp_large(6),
 	  _driveStraightAtDistKp(120), 
 	  strafeIRKp(5),
-	  K_pt(2) {}
+	  K_pt(1.25) {}
 
 void Motor::initialise(HardwareSerial *serialCom) {
 	if (serialCom) _serial = serialCom;
@@ -280,12 +280,12 @@ bool Motor::DriveToLight(int PTleft, int PTmiddle, int PTright){
 	PTdiff = PTRightPerc - PTLeftPerc;
 
 
-	// Serial.print("Left PT = ");
-	// Serial.print(PTLeftPerc);
-	// Serial.print(" Centre PT = ");
-	// Serial.print(PTMiddlePerc);
-	// Serial.print(" Right PT = ");
-	// Serial.println(PTRightPerc);
+	Serial.print("Left PT = ");
+	Serial.print(PTLeftPerc);
+	Serial.print(" Centre PT = ");
+	Serial.print(PTMiddlePerc);
+	Serial.print(" Right PT = ");
+	Serial.println(PTRightPerc);
 	// Serial.print("PT difference = ");
 	// Serial.println(PTdiff);	
 	// Serial.print("Last dir = ");
@@ -307,22 +307,22 @@ bool Motor::DriveToLight(int PTleft, int PTmiddle, int PTright){
 
 	PTcorrection = PTdiff * K_pt;
 
-	if((avgPT > 950)){
-		if (LastDirLeft){
-			turnVal = 100;
-		} else {
-			turnVal = -100;
-		}
-		leftFrontCommand  = constrain(1500 - turnVal, 1300, 1700);
-		leftRearCommand   = constrain(1500 - turnVal, 1300, 1700);
-		rightRearCommand  = constrain(1500 - turnVal, 1300, 1700);
-		rightFrontCommand = constrain(1500 - turnVal, 1300, 1700);
-	} else {
-		leftFrontCommand  = constrain(1500 + _speed + PTcorrection, 1300, 1700);
-		leftRearCommand   = constrain(1500 + _speed + PTcorrection, 1300, 1700);
-		rightRearCommand  = constrain(1500 - _speed + PTcorrection, 1300, 1700);
-		rightFrontCommand = constrain(1500 - _speed + PTcorrection, 1300, 1700);
-	}
+	// if((avgPT > 950)){
+	// 	if (LastDirLeft){
+	// 		turnVal = 100;
+	// 	} else {
+	// 		turnVal = -100;
+	// 	}
+	// 	leftFrontCommand  = constrain(1500 - turnVal, 1300, 1700);
+	// 	leftRearCommand   = constrain(1500 - turnVal, 1300, 1700);
+	// 	rightRearCommand  = constrain(1500 - turnVal, 1300, 1700);
+	// 	rightFrontCommand = constrain(1500 - turnVal, 1300, 1700);
+	// } else {
+		leftFrontCommand  = constrain(1500 + _speed + PTcorrection, 1200, 1800);
+		leftRearCommand   = constrain(1500 + _speed + PTcorrection, 1200, 1800);
+		rightRearCommand  = constrain(1500 - _speed + PTcorrection, 1200, 1800);
+		rightFrontCommand = constrain(1500 - _speed + PTcorrection, 1200, 1800);
+	// }
 
 	writeAll(leftFrontCommand, leftRearCommand, rightRearCommand, rightFrontCommand);
 
@@ -403,4 +403,3 @@ void Motor::log(const char *message) const {
 		_serial->println(message);
 	}
 }
-

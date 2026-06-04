@@ -90,10 +90,6 @@ float Sensors::readUltrasonicCm() {
 
         if (rawCm >= 3.0f) {
             uint8_t count = _usBufFull ? US_FILTER_SIZE : _usBufIdx;
-            if (_usStrictFilter) {
-                if (count > 0 && fabsf(rawCm - _usFiltered) > 10.0f)
-                    return _usFiltered;
-            }
             _usBuf[_usBufIdx] = (unsigned int)(rawCm * 10.0f);
             _usBufIdx = (_usBufIdx + 1) % US_FILTER_SIZE;
             if (_usBufIdx == 0) _usBufFull = true;

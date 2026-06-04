@@ -556,7 +556,9 @@ static void doApproach() {
 
         // ── AP_DRIVE: turret forward, front IR + forward US watched ──────────
         case AP_DRIVE: {
-            int pt = ptBrightest();   // fire-reached uses brightest of all 3 PTs
+            // Brightest (lowest ADC) of the three PTs already read this tick —
+            // avoids re-reading the analog pins via ptBrightest().
+            int pt = min(PTleft, min(PTmiddle, PTright));
             Serial.print("Brigtest = ");
             Serial.println(pt);
             if (pt < PT_FIRE_THRESH) {
@@ -594,6 +596,8 @@ static void doApproach() {
 
             float fl = sensors.readIRFrontLeft();
             float fr = sensors.readIRFrontRight();
+            // Turret is forward here, so use the throttled/filtered US value
+            // instead of a fresh blocking ping — keeps the drive loop fast.
             float us = sensors.pingNowCm();
             bool flBlk = (fl > 0.5f && fl < FRONT_IR_TRIGGER_L_CM);
             bool frBlk = (fr > 0.5f && fr < FRONT_IR_TRIGGER_R_CM);
@@ -702,6 +706,7 @@ static void doApproach() {
             } else {
                 Serial.println(F("[SIDE_CHECK] Both blocked → SPIN to find gap"));
                 turret_motor.write(TURRET_FWD);
+                detectHeading = sensors.getGyroHeading();   // anchor the spin sweep
                 gapClearCount = 0;
                 motors.rotateClockwise();
                 approachSub = AP_SPIN_GAP;
@@ -821,6 +826,7 @@ static void doApproach() {
         //    SETTLE_CLEAR_TICKS consecutive ticks before driving forward.
         //    If the front isn't clear, go back to AP_DRIVE to re-evaluate.
         case AP_SETTLE: {
+            static uint8_t settleFailCount = 0;   // consecutive settles that never confirmed clear
             motors.stop();   // hold still
             if (millis() - settleStartMs < SETTLE_PAUSE_MS) break;
 
@@ -839,6 +845,7 @@ static void doApproach() {
                 Serial.println(F("[SETTLE] Front confirmed clear → turret-seek flame"));
                 // strafeRight is still set from the strafe we just finished, so
                 // doTurretSeek sweeps the correct side to re-find the flame.
+                settleFailCount = 0;
                 tseekInited    = false;
                 tseekFullSweep = false;
                 approachSub    = AP_DRIVE;
@@ -846,12 +853,23 @@ static void doApproach() {
                 break;
             }
 
-            // Still blocked after the pause — re-evaluate from AP_DRIVE
-            // (but only after giving it a reasonable window to clear)
+            // Still blocked after the pause. Re-evaluate from AP_DRIVE a couple
+            // of times; if the front never clears we are wedged — escalate to the
+            // spin-gap recovery instead of ping-ponging settle↔drive forever.
             if (millis() - settleStartMs > (SETTLE_PAUSE_MS + 600)) {
-                Serial.println(F("[SETTLE] Still blocked → re-evaluate (AP_DRIVE)"));
-                motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
-                approachSub = AP_DRIVE;
+                if (++settleFailCount >= 2) {
+                    Serial.println(F("[SETTLE] Wedged → SPIN to find gap"));
+                    settleFailCount = 0;
+                    turret_motor.write(TURRET_FWD);
+                    detectHeading = sensors.getGyroHeading();
+                    gapClearCount = 0;
+                    motors.rotateClockwise();
+                    approachSub = AP_SPIN_GAP;
+                } else {
+                    Serial.println(F("[SETTLE] Still blocked → re-evaluate (AP_DRIVE)"));
+                    motors.SetDriveStraightTarget(FORWARD, hotspot.angle, 0.0f, 0.0f);
+                    approachSub = AP_DRIVE;
+                }
             }
             break;
         }
@@ -916,7 +934,7 @@ static void doApproach() {
 
             float fl = sensors.readIRFrontLeft();
             float fr = sensors.readIRFrontRight();
-            float us = sensors.pingNowCm();
+            float us = sensors.pingNowCm();   // turret forward → filtered US is valid
             bool blocked = (fl > 0.5f && fl < FRONT_IR_TRIGGER_L_CM) ||
                            (fr > 0.5f && fr < FRONT_IR_TRIGGER_R_CM) ||
                            (us > 0.5f && us < US_FWD_TRIGGER_CM);
