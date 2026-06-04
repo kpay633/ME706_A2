@@ -16,7 +16,7 @@ extern Servo   turret_motor;
 #define PT_RIGHT_PIN   A2
 
 // ─── Fire detection ───────────────────────────────────────────────────────────
-#define PT_FIRE_THRESH        25
+#define PT_FIRE_THRESH        28
 #define PT_FIRE_CONFIRM_TICKS  3     // consecutive ticks below threshold to confirm
 #define PT_OBSTACLE_SUPPRESS  35    // PT below this = close to flame, ignore fwd obstacles
                                      // (flame base reads as an obstacle near the end)
