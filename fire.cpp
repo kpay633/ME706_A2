@@ -52,8 +52,8 @@ static constexpr float FRONT_IR_TRIGGER_L_CM = 28.0f;  // front-LEFT  IR: obstac
 static constexpr float FRONT_IR_TRIGGER_R_CM = FRONT_IR_TRIGGER_L_CM-5;  // front-RIGHT IR: obstacle ahead
 static constexpr float FRONT_IR_CLEAR_L_CM   = 32.0f;  // front-LEFT  IR: clear (hysteresis)
 static constexpr float FRONT_IR_CLEAR_R_CM   = FRONT_IR_CLEAR_L_CM-3;  // front-RIGHT IR: clear (hysteresis)
-static constexpr float SIDE_US_BLOCKED_CM  = 10.0f;  // turret US side-check: corridor blocked
-static constexpr float REAR_IR_BLOCKED_CM  = SIDE_US_BLOCKED_CM-2.0;  // rear side IR: obstacle in strafe path
+static constexpr float SIDE_US_BLOCKED_CM  = 12.0f;  // turret US side-check: corridor blocked
+static constexpr float REAR_IR_BLOCKED_CM  = SIDE_US_BLOCKED_CM-4.0;  // rear side IR: obstacle in strafe path
 static constexpr float US_FWD_TRIGGER_CM   = FRONT_IR_TRIGGER_R_CM-8;  // forward US: obstacle straight ahead
 
 // ─── Motion timing / odometry ─────────────────────────────────────────────────
@@ -64,10 +64,10 @@ static constexpr uint8_t       CORRIDOR_BLOCK_TICKS  = 3;
 static constexpr unsigned long STRAFE_US_SETTLE_MS   = 250;
 static constexpr float         SENSOR_JUMP_REJECT_CM = 20.0f;
 static constexpr unsigned long STRAFE_EXTRA_MS       = 300;
-static constexpr unsigned long US_ONLY_STRAFE_MS     = 600;   // min strafe time when only US detected (no front IR to clear against)
+static constexpr unsigned long US_ONLY_STRAFE_MS     = 100;   // min strafe time when only US detected (no front IR to clear against)
 static constexpr unsigned long FLIP_STRAFE_EXTRA_MS  = 1000;  // extra clearance beyond returning to start, when strafe flips sides
 static constexpr unsigned long POST_STRAFE_FWD_MS    = 1300;
-static constexpr unsigned long REVERSE_TIMEOUT_MS    = 1000;
+static constexpr unsigned long REVERSE_TIMEOUT_MS    = 250;
 
 // ─── Both-sides-blocked recovery (spin to find a gap) ────────────────────────
 static constexpr float    GAP_MARGIN_CM       = 20.0f;  // all 3 front sensors must exceed this = gap
@@ -143,6 +143,7 @@ static unsigned long strafeStartMs      = 0;
 static unsigned long strafeMinMs        = 0;     // minimum strafe duration this attempt (ms)
 static unsigned long strafePrevElapsed  = 0;     // elapsed time of the strafe we flipped away from
 static bool          usOnlyDetection    = false; // true if the obstacle was US-only (no front IR)
+static bool          usFrontSeen        = false; // US-only strafe: right front IR has now caught the obstacle
 static uint8_t       corridorBlockCount = 0;
 static float         prevUsSide         = -1.0f;
 static float         prevRearIR         = -1.0f;
@@ -211,7 +212,7 @@ STEP runFireRoutine() {
         case FS_APPROACH:    doApproach();   break;
         case FS_DONE:
             Serial.println(F("[FSM] DONE — NEXT_STEP"));
-            return NEXT_STEP;
+            return CURRENT_STEP;
     }
     return CURRENT_STEP;
 }
@@ -530,6 +531,12 @@ static void beginStrafe(bool goRight, unsigned long minMs) {
     corridorBlockCount = 0;
     prevUsSide         = -1.0f;
     prevRearIR         = -1.0f;
+    usFrontSeen        = false;        // US-only: right front IR hasn't caught it yet
+    // Guarantee the turret is pointed at the strafe side at the moment we start
+    // strafing. The side-check already aimed it here, but re-asserting closes
+    // the occasional case where the strafe began with the servo not on-side.
+    // (The STRAFE_US_SETTLE_MS gate below covers any remaining servo travel.)
+    pointTurret(goRight);
     Serial.print(F("[STRAFE] Begin ")); Serial.print(goRight ? F("RIGHT") : F("LEFT"));
     Serial.print(F(" minMs=")); Serial.println(minMs);
     if (goRight) motors.strafeRight();
@@ -683,6 +690,12 @@ static void doApproach() {
             if (ptBrightest() > 500){          // flame gone (dim = high ADC)
                 digitalWrite(9, LOW);          // fan off
                 firesExtinguished++;
+
+                if (firesExtinguished > 1) {
+                    Serial.println(F("[BLOW_OUT] MAX_FIRES reached → DONE"));
+                    subState = FS_DONE;
+                    return;
+                }
                 Serial.print(F("[BLOW_OUT] Fire out (#"));
                 Serial.print(firesExtinguished);
                 Serial.println(F(") -> back off + sweep for next"));
@@ -698,7 +711,7 @@ static void doApproach() {
                 //      range) confirms clear, so the resumed approach won't
                 //      instantly re-trigger on the stand.
                 // Capped by REVERSE_TIMEOUT_MS so we don't back into anything.
-                const unsigned long REV_MIN_MS = 700;
+                const unsigned long REV_MIN_MS = 50;
                 motors.driveReverse();
                 unsigned long revStart = millis();
                 while (millis() - revStart < REVERSE_TIMEOUT_MS) {
@@ -733,18 +746,17 @@ static void doApproach() {
             Serial.println(blocked ? F(" BLOCKED") : F(" CLEAR"));
 
             if (!blocked) {
-                // Decide the minimum strafe duration:
+                // Minimum strafe duration this attempt:
                 //  - flipped attempt → previous elapsed + a normal amount, so the
                 //    opposite strafe undoes the original travel plus clearance
-                //  - US-only detection → a fixed minimum (no IR to clear against)
-                //  - normal IR detection → 0 (purely sensor-terminated)
+                //  - otherwise → 0. Normal-IR exits on front-clear; US-only is
+                //    handled specially in AP_STRAFING (strafe left until the
+                //    right front IR catches the obstacle, then clear on gap).
                 unsigned long minMs = 0;
                 if (sideCheckFallback && strafePrevElapsed > 0) {
                     // Return across the original travel, then clear well past it.
                     minMs = strafePrevElapsed + FLIP_STRAFE_EXTRA_MS;
                     Serial.print(F("[SIDE_CHECK] flipped strafe min=")); Serial.println(minMs);
-                } else if (usOnlyDetection) {
-                    minMs = US_ONLY_STRAFE_MS;
                 }
                 beginStrafe(strafeRight, minMs);
                 approachSub = AP_STRAFING;
@@ -809,12 +821,25 @@ static void doApproach() {
                 corridorBlockCount = 0;
             }
 
-            // Don't allow the front-clear exit until the minimum strafe time
-            // has elapsed. For US-only detections frontIsClear() is true from
-            // the first tick (no IR was ever blocked); for flipped strafes we
-            // want to cover the original distance back plus clearance.
-            bool minElapsed = (millis() - strafeStartMs >= strafeMinMs);
-            if (minElapsed && frontIsClear()) {
+            // Front-clear exit.
+            bool readyToClear;
+            if (usOnlyDetection && !sideCheckFallback) {
+                // US-only: the obstacle was dead-ahead and neither front IR saw
+                // it. Strafe LEFT until the RIGHT front IR catches it
+                // (usFrontSeen), then behave like a normal strafe — exit once
+                // the front IR shows a gap (frontIsClear). If the right IR never
+                // catches it within US_ONLY_STRAFE_MS (thin object / spurious US
+                // read), proceed anyway so we don't strafe indefinitely.
+                float frFront = sensors.readIRFrontRight();
+                if (frFront > 0.5f && frFront < FRONT_IR_TRIGGER_R_CM) usFrontSeen = true;
+                bool capReached = (millis() - strafeStartMs >= US_ONLY_STRAFE_MS);
+                readyToClear = frontIsClear() && (usFrontSeen || capReached);
+            } else {
+                // Normal / flipped strafe: front IR clear after the minimum time.
+                bool minElapsed = (millis() - strafeStartMs >= strafeMinMs);
+                readyToClear = minElapsed && frontIsClear();
+            }
+            if (readyToClear) {
                 Serial.println(F("[STRAFE] Front clear → extra strafe"));
                 strafeExtraMs = millis();
                 approachSub = AP_STRAFE_EXTRA;
