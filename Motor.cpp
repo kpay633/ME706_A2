@@ -1,14 +1,14 @@
 #include "Motor.h"
 
-#define MotorOffset 60
-#define TurnTolerance 0.5 //deg
+#define MotorOffset 70
+#define TurnTolerance 2 //deg
 
 Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, uint8_t rightFrontPin)
 	: _leftFrontPin(leftFrontPin),
 	  _leftRearPin(leftRearPin),
 	  _rightRearPin(rightRearPin),
 	  _rightFrontPin(rightFrontPin),
-	  _speed(100),
+	  _speed(300),
 	  _driveStraightTargetAng(0.0f),
 	  _driveStraightTargetSideDist(0.0f),
 	  _driveStraightTargetEndDist(0.0f),
@@ -25,7 +25,8 @@ Motor::Motor(uint8_t leftFrontPin, uint8_t leftRearPin, uint8_t rightRearPin, ui
 	  turnTargetSet(false),
 	  turn_kp_large(6),
 	  _driveStraightAtDistKp(120), 
-	  strafeIRKp(5) {}
+	  strafeIRKp(5),
+	  K_pt(1.25) {}
 
 void Motor::initialise(HardwareSerial *serialCom) {
 	if (serialCom) _serial = serialCom;
@@ -266,6 +267,67 @@ bool Motor::driveStraight(float gyro_angle, float usDist, float irDist) {
 	return true;
 }
 
+bool Motor::DriveToLight(int PTleft, int PTmiddle, int PTright){
+	bool LastDirLeft = false;
+	float avgPT = (PTleft + PTmiddle + PTright)/3.0;
+	float PTLeftPerc = (PTleft - avgPT)/avgPT*100;
+	float PTRightPerc = (PTright - avgPT)/avgPT*100;
+	float PTMiddlePerc = (PTmiddle - avgPT)*100/avgPT;
+	int turnVal;
+
+
+	// Positive diff = fire is to the left
+	PTdiff = PTRightPerc - PTLeftPerc;
+
+
+	Serial.print("Left PT = ");
+	Serial.print(PTLeftPerc);
+	Serial.print(" Centre PT = ");
+	Serial.print(PTMiddlePerc);
+	Serial.print(" Right PT = ");
+	Serial.println(PTRightPerc);
+	// Serial.print("PT difference = ");
+	// Serial.println(PTdiff);	
+	// Serial.print("Last dir = ");
+	// if (LastDirLeft){
+	// 	Serial.println("left");
+	// } else {
+	// 	Serial.println("right");
+	// }
+
+	
+
+	if (PTdiff > 20){
+			LastDirLeft = true;
+	}
+	if (PTdiff < -50){
+			LastDirLeft = false;
+	}
+
+
+	PTcorrection = PTdiff * K_pt;
+
+	// if((avgPT > 950)){
+	// 	if (LastDirLeft){
+	// 		turnVal = 100;
+	// 	} else {
+	// 		turnVal = -100;
+	// 	}
+	// 	leftFrontCommand  = constrain(1500 - turnVal, 1300, 1700);
+	// 	leftRearCommand   = constrain(1500 - turnVal, 1300, 1700);
+	// 	rightRearCommand  = constrain(1500 - turnVal, 1300, 1700);
+	// 	rightFrontCommand = constrain(1500 - turnVal, 1300, 1700);
+	// } else {
+		leftFrontCommand  = constrain(1500 + _speed + PTcorrection, 1200, 1800);
+		leftRearCommand   = constrain(1500 + _speed + PTcorrection, 1200, 1800);
+		rightRearCommand  = constrain(1500 - _speed + PTcorrection, 1200, 1800);
+		rightFrontCommand = constrain(1500 - _speed + PTcorrection, 1200, 1800);
+	// }
+
+	writeAll(leftFrontCommand, leftRearCommand, rightRearCommand, rightFrontCommand);
+
+}
+
 
 bool Motor::strafeToUSDist(float targetDist, float usDist, float gyroAngle, float irDist) {
 	float distError = targetDist - usDist;
@@ -341,4 +403,3 @@ void Motor::log(const char *message) const {
 		_serial->println(message);
 	}
 }
-
