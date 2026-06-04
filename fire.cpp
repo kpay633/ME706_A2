@@ -52,9 +52,9 @@ static constexpr float FRONT_IR_TRIGGER_L_CM = 28.0f;  // front-LEFT  IR: obstac
 static constexpr float FRONT_IR_TRIGGER_R_CM = FRONT_IR_TRIGGER_L_CM-5;  // front-RIGHT IR: obstacle ahead
 static constexpr float FRONT_IR_CLEAR_L_CM   = 32.0f;  // front-LEFT  IR: clear (hysteresis)
 static constexpr float FRONT_IR_CLEAR_R_CM   = FRONT_IR_CLEAR_L_CM-3;  // front-RIGHT IR: clear (hysteresis)
-static constexpr float SIDE_US_BLOCKED_CM  = 13.0f;  // turret US side-check: corridor blocked
-static constexpr float REAR_IR_BLOCKED_CM  = SIDE_US_BLOCKED_CM-2.0;  // rear side IR: obstacle in strafe path
-static constexpr float US_FWD_TRIGGER_CM   = FRONT_IR_TRIGGER_R_CM-4;  // forward US: obstacle straight ahead
+static constexpr float SIDE_US_BLOCKED_CM  = 12.0f;  // turret US side-check: corridor blocked
+static constexpr float REAR_IR_BLOCKED_CM  = SIDE_US_BLOCKED_CM-4.0;  // rear side IR: obstacle in strafe path
+static constexpr float US_FWD_TRIGGER_CM   = FRONT_IR_TRIGGER_R_CM-8;  // forward US: obstacle straight ahead
 
 // ─── Motion timing / odometry ─────────────────────────────────────────────────
 static constexpr unsigned long SIDE_CHECK_SETTLE_MS = 400;  // time for the 90° servo sweep to finish + settle
@@ -71,7 +71,7 @@ static constexpr unsigned long REVERSE_TIMEOUT_MS    = 250;
 
 // ─── Both-sides-blocked recovery (spin to find a gap) ────────────────────────
 static constexpr float    GAP_MARGIN_CM       = 20.0f;  // all 3 front sensors must exceed this = gap
-static constexpr uint8_t  GAP_CONFIRM_TICKS   = 2;      // consecutive clear ticks to confirm a gap
+static constexpr uint8_t  GAP_CONFIRM_TICKS   = 3;      // consecutive clear ticks to confirm a gap
 static constexpr float    GAP_SPIN_MAX_DEG    = 90.0f;  // max CW spin while searching for a gap
 static constexpr float    NOGAP_REVERSE_CM    = 30.0f;  // reverse distance if no gap found (easy to change)
 static constexpr unsigned long NOGAP_STRAFE_MS = 2500;  // long strafe after the no-gap reverse
@@ -472,19 +472,6 @@ static bool frontIsClear() {
     return flClear && frClear;
 }
 
-// Strafe-gap criterion: tighter than frontIsClear(). A gap is registered as
-// soon as both front IR read past the TRIGGER distances (28/23) rather than the
-// generous CLEAR hysteresis (32/29). This stops the strafe over-shooting when a
-// wall/background sits ~28–32 cm behind where the obstacle was (which keeps
-// frontIsClear() false long after the obstacle itself has left the beam).
-static bool frontGapClear() {
-    float fl = sensors.readIRFrontLeft();
-    float fr = sensors.readIRFrontRight();
-    bool flClear = (fl < 0.5f || fl > FRONT_IR_TRIGGER_L_CM);
-    bool frClear = (fr < 0.5f || fr > FRONT_IR_TRIGGER_R_CM);
-    return flClear && frClear;
-}
-
 // All three front sensors (FL, FR, forward US) clear with GAP_MARGIN_CM of room.
 // Turret must be pointing forward for the US reading to be meaningful.
 static bool allFrontClearMargin() {
@@ -819,7 +806,7 @@ static void doApproach() {
                 Serial.print(F("[STRAFE] usSide=")); Serial.print(usSide, 1);
                 Serial.print(F(" rearIR="));         Serial.print(rearIR, 1);
                 Serial.print(F(" blkCnt="));         Serial.print(corridorBlockCount);
-                Serial.print(F(" frontClear="));     Serial.println(frontGapClear());
+                Serial.print(F(" frontClear="));     Serial.println(frontIsClear());
             }
 
             if (usBlocked || rearBlocked) {
@@ -840,17 +827,17 @@ static void doApproach() {
                 // US-only: the obstacle was dead-ahead and neither front IR saw
                 // it. Strafe LEFT until the RIGHT front IR catches it
                 // (usFrontSeen), then behave like a normal strafe — exit once
-                // the front IR shows a gap (frontGapClear). If the right IR never
+                // the front IR shows a gap (frontIsClear). If the right IR never
                 // catches it within US_ONLY_STRAFE_MS (thin object / spurious US
                 // read), proceed anyway so we don't strafe indefinitely.
                 float frFront = sensors.readIRFrontRight();
                 if (frFront > 0.5f && frFront < FRONT_IR_TRIGGER_R_CM) usFrontSeen = true;
                 bool capReached = (millis() - strafeStartMs >= US_ONLY_STRAFE_MS);
-                readyToClear = frontGapClear() && (usFrontSeen || capReached);
+                readyToClear = frontIsClear() && (usFrontSeen || capReached);
             } else {
-                // Normal / flipped strafe: front gap clear after the minimum time.
+                // Normal / flipped strafe: front IR clear after the minimum time.
                 bool minElapsed = (millis() - strafeStartMs >= strafeMinMs);
-                readyToClear = minElapsed && frontGapClear();
+                readyToClear = minElapsed && frontIsClear();
             }
             if (readyToClear) {
                 Serial.println(F("[STRAFE] Front clear → extra strafe"));
@@ -1088,12 +1075,8 @@ static void doApproach() {
             if (distReached || timedOut) {
                 motors.stop();
                 Serial.println(F("[NOGAP_REV] Done → long strafe LEFT"));
-                strafeRight        = false;
-                nogapStrafeMs      = millis();
-                corridorBlockCount = 0;
-                prevUsSide         = -1.0f;
-                prevRearIR         = -1.0f;
-                pointTurret(false);          // US faces the strafe (LEFT) direction
+                strafeRight   = false;
+                nogapStrafeMs = millis();
                 motors.strafeLeft();
                 approachSub = AP_NOGAP_STRAFE;
             }
@@ -1102,41 +1085,7 @@ static void doApproach() {
 
         // ── AP_NOGAP_STRAFE: long strafe, then re-find flame ─────────────────
         case AP_NOGAP_STRAFE: {
-            // Object detection while strafing (LEFT): turret US (aimed in the
-            // strafe direction) + the corresponding rear IR (rear-left). Bail
-            // out early if either reports the strafe path blocked.
-            float usSide = sensors.pingNowCm();
-            float rearIR = strafeRight ? sensors.readIRRearRight()
-                                       : sensors.readIRRearLeft();
-
-            bool usSettled = (millis() - nogapStrafeMs >= STRAFE_US_SETTLE_MS);
-
-            bool usValid = true, rearValid = true;
-            if (prevUsSide > 0.5f && usSide > 0.5f &&
-                fabsf(usSide - prevUsSide) > SENSOR_JUMP_REJECT_CM) usValid = false;
-            if (prevRearIR > 0.5f && rearIR > 0.5f &&
-                fabsf(rearIR - prevRearIR) > SENSOR_JUMP_REJECT_CM) rearValid = false;
-
-            bool usBlocked   = usSettled && usValid &&
-                               (usSide > 0.5f && usSide < SIDE_US_BLOCKED_CM);
-            bool rearBlocked = rearValid &&
-                               (rearIR > 0.5f && rearIR < REAR_IR_BLOCKED_CM);
-
-            if (usValid)   prevUsSide = usSide;
-            if (rearValid) prevRearIR = rearIR;
-
-            bool blockedOut = false;
-            if (usBlocked || rearBlocked) {
-                corridorBlockCount++;
-                if (corridorBlockCount >= CORRIDOR_BLOCK_TICKS) {
-                    Serial.println(F("[NOGAP_STRAFE] Blocked → stop early"));
-                    blockedOut = true;
-                }
-            } else {
-                corridorBlockCount = 0;
-            }
-
-            if (blockedOut || (millis() - nogapStrafeMs >= NOGAP_STRAFE_MS)) {
+            if (millis() - nogapStrafeMs >= NOGAP_STRAFE_MS) {
                 motors.stop();
                 Serial.println(F("[NOGAP_STRAFE] Done → turret-seek"));
                 strafeRight = false;       // strafed left → seek right
