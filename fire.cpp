@@ -597,6 +597,7 @@ static void doApproach() {
 
         // ── AP_DRIVE: turret forward, front IR + forward US watched ──────────
         case AP_DRIVE: {
+            turret_motor.write(TURRET_FWD);
             int pt = ptBrightest();   // fire-reached uses brightest of all 3 PTs
             // Serial.print("Brightest = ");
             Serial.println(pt);
@@ -1082,7 +1083,7 @@ static void doApproach() {
                 corridorBlockCount = 0;
                 nogapStrafeMs      = millis();
                 motors.strafeLeft();
-                approachSub = AP_NOGAP_STRAFE;
+                approachSub = AP_DRIVE;
             }   
             break;
         }
